@@ -95,6 +95,9 @@ export async function main(host, hostEvent) {
     const out = adapter.format(ev, result || {});
     if (out != null) process.stdout.write(typeof out === 'string' ? out : JSON.stringify(out));
   } catch (e) {
-    try { fs.appendFileSync(path.join(home(), 'hook-errors.log'), `${now()} ${host}/${hostEvent}: ${e.stack}\n`); } catch {}
+    try {
+      fs.mkdirSync(home(), { recursive: true }); // the error may happen before the DB (and its folder) was created
+      fs.appendFileSync(path.join(home(), 'hook-errors.log'), `${now()} ${host}/${hostEvent}: ${e.stack}\n`);
+    } catch {}
   }
 }

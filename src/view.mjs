@@ -112,7 +112,8 @@ export function startViewer({ port = 0, token = crypto.randomBytes(12).toString(
       send(200, route[2](Object.fromEntries(url.searchParams), body, ...(url.pathname.match(route[1]).slice(1).map(decodeURIComponent))));
     } catch (e) { send(e.code === 404 ? 404 : 400, { error: e.message }); }
   });
-  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => {
-    resolve({ server, url: `http://127.0.0.1:${server.address().port}/?t=${token}` });
-  }));
+  return new Promise((resolve, reject) => {
+    server.once('error', (e) => reject(e.code === 'EADDRINUSE' ? new Error(`port ${port} is in use (try --port 0)`) : e));
+    server.listen(port, '127.0.0.1', () => resolve({ server, url: `http://127.0.0.1:${server.address().port}/?t=${token}` }));
+  });
 }

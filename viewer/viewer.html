@@ -170,7 +170,7 @@ async function loadProjects() {
   const pick = document.getElementById('proj');
   if (!ps.some(p => p.id === project)) project = ps[0]?.id || '';
   pick.replaceChildren(...ps.map(p => h('option', { value: p.id, selected: p.id === project, title: p.root }, p.name || p.root)));
-  pick.onchange = () => { project = pick.value; localStorage.setItem('uac.project', project); openId = null; updateBadge(); render(); };
+  pick.onchange = () => { project = pick.value; localStorage.setItem('uac.project', project); openId = openSess = null; picked.clear(); setHash(); updateBadge(); render(); };
 }
 
 // ---------- views ----------
@@ -192,22 +192,32 @@ const VIEWS = {
         tile('raw chars', x.raw_chars), tile('pack chars', x.pack_chars), tile('compression ratio', ratio)));
   },
 
-  async sessions(out) {
-    const ss = await api(P('/api/sessions'));
-    if (!ss.length) return out.append(empty('No sessions.'));
-    ss.sort((a, b) => str(a.agent).localeCompare(str(b.agent)) || str(b.started_at).localeCompare(str(a.started_at)));
-    const capBtns = (s) => h('span', { class: 'row', style: 'margin:0' }, ['on', 'paused', 'off'].map(state =>
-      h('button', { class: s.capture === state ? 'sel' : '', onclick: act(async () => { await api(`/api/sessions/${encodeURIComponent(s.id)}/capture`, 'PUT', { state }); render(); }) }, state)));
-    const del = (s) => h('button', { class: 'dng', onclick: act(async () => {
-      if (!confirm(`Delete session ${s.id} and its ${s.events ?? ''} events? This cannot be undone.`)) return;
-      await api(`/api/sessions/${encodeURIComponent(s.id)}`, 'DELETE'); render();
-    }) }, 'Delete');
-    out.append(h('table', null,
-      h('tr', null, ['Agent', 'Title', 'Branch', 'Status', 'Started', 'Ended', 'Events', 'Unsaved', 'Capture', ''].map(t => h('th', null, t))),
-      ss.map(s => h('tr', null,
-        h('td', null, s.agent), h('td', null, s.title || h('span', { class: 'meta' }, s.id)), h('td', null, s.branch),
-        h('td', null, st(s.status)), h('td', null, fmt(s.started_at)), h('td', null, fmt(s.ended_at)),
-        h('td', null, s.events), h('td', null, s.unsaved), h('td', null, capBtns(s)), h('td', null, del(s))))));
+  async sessions(out, live) {
+    const listBox = h('div'), detail = h('div');
+    const load = async () => {
+      const ss = await api(P('/api/sessions'));
+      if (!live()) return;
+      if (!ss.length) return listBox.replaceChildren(empty('No sessions.'));
+      ss.sort((a, b) => str(a.agent).localeCompare(str(b.agent)) || str(b.started_at).localeCompare(str(a.started_at)));
+      const capBtns = (s) => h('span', { class: 'row', style: 'margin:0' }, ['on', 'paused', 'off'].map(state =>
+        h('button', { class: s.capture === state ? 'sel' : '', onclick: act(async () => { await api(`/api/sessions/${encodeURIComponent(s.id)}/capture`, 'PUT', { state }); await load(); }) }, state)));
+      const del = (s) => h('button', { class: 'dng', onclick: act(async () => {
+        if (!confirm(`Delete session ${s.id} and its ${s.events ?? ''} events? This cannot be undone.`)) return;
+        await api(`/api/sessions/${encodeURIComponent(s.id)}`, 'DELETE');
+        if (openSess === s.id) { openSess = null; setHash(); detail.replaceChildren(); }
+        await load();
+      }) }, 'Delete');
+      listBox.replaceChildren(h('table', null,
+        h('tr', null, ['Agent', 'Title', 'Branch', 'Status', 'Started', 'Ended', 'Events', 'Unsaved', 'Capture', ''].map(t => h('th', null, t))),
+        ss.map(s => h('tr', { class: 'click' + (s.id === openSess ? ' cur' : ''), onclick: () => { openSess = s.id; setHash(); load(); openSession(detail, load); } },
+          h('td', null, s.agent), h('td', null, s.title || h('span', { class: 'meta' }, s.id)), h('td', null, s.branch),
+          h('td', null, st(s.status)), h('td', null, fmt(s.started_at)), h('td', null, fmt(s.ended_at)),
+          h('td', null, s.events), h('td', null, s.unsaved), h('td', null, capBtns(s)), h('td', null, del(s))))));
+    };
+    pollFn = () => load().catch(() => {});
+    out.append(listBox, detail);
+    await load();
+    if (openSess) openSession(detail, load);
   },
 
   async memories(out, live) {
@@ -216,15 +226,15 @@ const VIEWS = {
       const ms = await api(P('/api/memories', mf));
       if (!live()) return;
       listBox.replaceChildren(ms.length ? h('table', null,
-        h('tr', null, ['Type', 'Title', 'Status', 'Imp', 'Updated'].map(t => h('th', null, t))),
-        ms.map(m => h('tr', { class: 'click' + (m.id === openId ? ' cur' : ''), onclick: (e) => { openId = m.id; openMemory(detail, load); listBox.querySelectorAll('tr.cur').forEach(r => r.classList.remove('cur')); e.currentTarget.classList.add('cur'); } },
-          h('td', null, m.type), h('td', null, m.pinned ? '★ ' : '', m.title), h('td', null, st(m.status)),
+        h('tr', null, ['', 'Type', 'Title', 'Status', 'Imp', 'Updated'].map(t => h('th', null, t))),
+        ms.map(m => h('tr', { class: 'click' + (m.id === openId ? ' cur' : ''), onclick: (e) => { openId = m.id; setHash(); openMemory(detail, load); listBox.querySelectorAll('tr.cur').forEach(r => r.classList.remove('cur')); e.currentTarget.classList.add('cur'); } },
+          h('td', null, pickBox(m.id)), h('td', null, m.type), h('td', null, m.pinned ? '★ ' : '', m.title), h('td', null, st(m.status)),
           h('td', null, m.importance != null ? Number(m.importance).toFixed(2) : ''), h('td', null, fmt(m.updated_at))))) : empty('No memories match.'));
     };
     let t;
     const q = h('input', { type: 'text', placeholder: 'Search text…', value: mf.q, oninput: (e) => { clearTimeout(t); t = setTimeout(() => { mf.q = e.target.value; load().catch(err => showErr(err.message)); }, 250); } });
     const f = (key, opts) => sel(mf[key], [['', 'any ' + key], ...opts], { onchange: (e) => { mf[key] = e.target.value; load().catch(err => showErr(err.message)); } });
-    out.append(h('div', { class: 'bar' }, q, f('type', TYPES), f('status', STATUSES)), h('div', { class: 'split' }, listBox, detail));
+    out.append(h('div', { class: 'bar' }, q, f('type', TYPES), f('status', STATUSES), selAll(listBox)), h('div', { class: 'split' }, listBox, detail));
     await load();
     if (openId) openMemory(detail, load);
   },
@@ -244,31 +254,32 @@ const VIEWS = {
   async checkpoints(out) {
     const cs = await api(P('/api/checkpoints'));
     if (!cs.length) return out.append(empty('No checkpoints.'));
-    cs.forEach(c => out.append(h('div', { class: 'card' },
-      h('h3', null, c.goal || '(no goal)'),
-      h('div', { class: 'meta' }, [c.trigger, c.session_id, fmt(c.ts)].filter(Boolean).join(' · ')),
-      text('Working', c.state_working ?? c.working), text('Broken', c.state_broken ?? c.broken),
-      list('Files', c.files), list('Next steps', c.next_steps), text('Note for next dev', c.note_for_next_dev ?? c.note))));
+    out.append(h('div', { class: 'bar' }, selAll(out)), ...cs.map(cpCard));
   },
 
   async summaries(out) {
     const ss = await api(P('/api/summaries'));
     if (!ss.length) return out.append(empty('No summaries.'));
-    ss.forEach(s => out.append(h('div', { class: 'card' },
-      h('h3', null, s.title || '(untitled)'),
-      h('div', { class: 'meta' }, [s.level, s.session_id, fmt(s.created_at ?? s.ts),
-        s.tokens_in != null ? `${s.tokens_in} in / ${s.tokens_out} out tokens` : '', s.cost_usd ? '$' + Number(s.cost_usd).toFixed(4) : ''].filter(Boolean).join(' · ')),
-      h('pre', null, str(s.body)))));
+    out.append(h('div', { class: 'bar' }, selAll(out)), ...ss.map(sumCard));
   },
 
   async packs(out) {
     const ps = await api(P('/api/packs'));
+    const setNext = (pack) => act(async () => { await api(P('/api/next'), 'PUT', { pack }); render(); });
+    out.append(h('div', { class: 'bar' }, h('button', { onclick: setNext(null), disabled: !ps.some(p => p.next) }, 'Clear next-session choice'),
+      h('span', { class: 'meta' }, 'Tick memories, summaries or checkpoints in their tabs to build a new pack.')));
     if (!ps.length) return out.append(empty('No packs.'));
-    ps.forEach(p => out.append(h('div', { class: 'card' },
-      h('h3', null, p.name || p.id),
-      h('div', { class: 'meta' }, [p.id, p.budget_tokens ? p.budget_tokens + ' token budget' : '', p.created_by_session, fmt(p.created_at)].filter(Boolean).join(' · ')),
-      text('Goal', p.goal),
-      list('Items', arr(p.items).map(i => typeof i === 'object' ? [i.item_type, i.item_id, i.title].filter(Boolean).join(' · ') : i)))));
+    ps.forEach(p => {
+      const ids = arr(p.item_ids ?? p.items).map(i => typeof i === 'object' ? i.item_id : i);
+      out.append(h('div', { class: 'card' },
+        h('h3', null, p.name || p.id, p.next ? [' ', h('span', { class: 'badge next' }, 'NEXT SESSION')] : null),
+        h('div', { class: 'meta' }, [p.id, ids.length + ' items', p.budget_tokens ? p.budget_tokens + ' token budget' : '', p.created_by_session, fmt(p.created_at)].filter(Boolean).join(' · ')),
+        text('Goal', p.goal),
+        h('div', { class: 'row' },
+          h('button', { class: 'pri', onclick: setNext(p.id), disabled: !!p.next }, 'Use for next session'),
+          h('button', { class: 'dng', onclick: act(async () => { if (!confirm(`Delete pack ${p.name || p.id}?`)) return; await api(`/api/packs/${encodeURIComponent(p.id)}`, 'DELETE'); render(); }) }, 'Delete')),
+        h('details', null, h('summary', null, `${ids.length} items`), h('ul', null, ids.map(id => h('li', null, idLink(id)))))));
+    });
   },
 
   async retrievals(out) {
@@ -297,6 +308,51 @@ const VIEWS = {
       h('div', { class: 'row' }, pick, h('button', { class: 'pri', onclick: act(async () => { const r = await api(P('/api/settings'), 'PUT', { mode: pick.value }); msg.textContent = 'Saved: ' + r.mode; }) }, 'Save'), msg)));
   },
 };
+
+// ---------- cards + session detail ----------
+function cpCard(c) {
+  return h('div', { class: 'card' },
+    h('h3', null, pickBox(c.id), ' ', c.goal || '(no goal)'),
+    h('div', { class: 'meta' }, [c.id, c.trigger, c.session_id, fmt(c.ts)].filter(Boolean).join(' · ')),
+    text('Working', c.state_working ?? c.working), text('Broken', c.state_broken ?? c.broken),
+    list('Files', c.files), list('Next steps', c.next_steps), text('Note for next dev', c.note_for_next_dev ?? c.note));
+}
+function sumCard(s) {
+  return h('div', { class: 'card' },
+    h('h3', null, pickBox(s.id), ' ', s.title || '(untitled)'),
+    h('div', { class: 'meta' }, [s.id, s.level, s.session_id, fmt(s.created_at ?? s.ts),
+      s.tokens_in != null ? `${s.tokens_in} in / ${s.tokens_out} out tokens` : '', s.cost_usd ? '$' + Number(s.cost_usd).toFixed(4) : ''].filter(Boolean).join(' · ')),
+    h('pre', null, str(s.body)));
+}
+async function openSession(box, reload) {
+  const id = openSess;
+  box.replaceChildren(empty('Loading…'));
+  let d;
+  try { d = await api(`/api/sessions/${encodeURIComponent(id)}`); } catch (e) { box.replaceChildren(empty(e.message)); return; }
+  if (id !== openSess) return;
+  const s = d.session || {}, L = d.loaded, evs = arr(d.events), sums = arr(d.summaries), cps = arr(d.checkpoints), ms = arr(d.memories);
+  const evBox = h('div');
+  const drawEv = (kind) => {
+    const rows = evs.filter(e => !kind || e.kind === kind);
+    evBox.replaceChildren(rows.length ? h('table', null, h('tr', null, ['Time', 'Kind', 'Tool', 'Target', 'Body'].map(t => h('th', null, t))),
+      rows.map(e => h('tr', null, h('td', { class: 'meta' }, fmt(e.ts)), h('td', null, e.kind), h('td', null, e.tool), h('td', null, e.target), h('td', { class: 'ev' }, h('div', null, str(e.body)))))) : empty('No events.'));
+  };
+  const kinds = [...new Set(evs.map(e => e.kind))].sort();
+  const sec = (label, items, fn) => [h('h4', null, `${label} (${items.length})`), items.length ? items.map(fn) : empty('None.')];
+  box.replaceChildren(h('div', { class: 'card', style: 'margin-top:12px' },
+    h('div', { class: 'bar', style: 'justify-content:space-between' }, h('h3', null, s.title || id),
+      h('button', { onclick: () => { openSess = null; setHash(); box.replaceChildren(); reload(); } }, 'Close')),
+    h('div', { class: 'meta' }, [id, s.agent, s.branch && 'branch ' + s.branch, s.capture && 'capture ' + s.capture, s.status, fmt(s.started_at) + (s.ended_at ? ' → ' + fmt(s.ended_at) : '')].filter(Boolean).join(' · ')),
+    h('h4', null, 'Loaded at start'),
+    L ? h('div', null, 'tier ', h('b', null, L.tier || '–'), ' · pack ', L.pack ? h('b', null, str(L.pack)) : '–', L.goal ? [' · goal: ', str(L.goal)] : '') : empty('Nothing recorded (no bootstrap).'),
+    sec('Summaries', sums, sumCard), sec('Checkpoints', cps, cpCard),
+    h('h4', null, `Memories created (${ms.length})`),
+    ms.length ? h('table', null, ms.map(m => h('tr', null, h('td', null, pickBox(m.id)), h('td', null, m.type), h('td', null, memLink(m.id, m.title || m.id)), h('td', null, st(m.status))))) : empty('None.'),
+    h('h4', null, `Events (${evs.length}${evs.length >= 500 ? ', last 500' : ''})`),
+    h('div', { class: 'bar' }, sel('', [['', 'all kinds'], ...kinds], { onchange: (e) => drawEv(e.target.value) })), evBox));
+  drawEv('');
+  syncPicks();
+}
 
 // ---------- memory detail + review cards ----------
 async function openMemory(box, reload) {
@@ -373,7 +429,7 @@ function reviewCard(m, label) {
 }
 
 // ---------- boot ----------
-setInterval(() => { if (tab === 'sessions' && !document.hidden && project) render(); }, 5000);
+setInterval(() => { if (tab === 'sessions' && !document.hidden && project && pollFn) pollFn(); }, 5000);
 (async () => {
   drawTabs();
   if (!TOKEN) showErr('No token in URL (?t=…). Open the link printed by `uac view`.');
