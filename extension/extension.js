@@ -6,6 +6,7 @@ const path = require('path');
 let ext, statusItem, viewerProc, viewerUrlP, panel;
 let current = null;              // last `uac status` result
 let lastProposed = -1, lastSig = '', busy = false, asking = false;
+let nextPack = null, tickN = 0;   // pack pre-selected for the next session (from `uac packs`)
 const seen = new Set();          // session ids we already prompted for
 const trees = {};
 
@@ -40,7 +41,8 @@ function render(st, err) {
   statusItem.text = cap === 'on' ? '● UAC rec' : cap === 'paused' ? '❚❚ UAC paused' : cap === 'ask' ? 'UAC ask' : '○ UAC off';
   const c = st?.counts || {};
   statusItem.tooltip = `UAC · ${st?.project?.name || 'no project'} (${st?.project?.mode || '?'} mode)\n` +
-    `session: ${st?.session?.id || 'none'}\n${c.active ?? 0} active · ${c.proposed ?? 0} proposed · ${c.conflict ?? 0} conflicts\nClick to toggle capture`;
+    `session: ${st?.session?.id || 'none'}\n${c.active ?? 0} active · ${c.proposed ?? 0} proposed · ${c.stale ?? 0} stale · ${c.conflict ?? 0} conflicts\n` +
+    `next session: ${nextPack ? `pack ${nextPack.name || nextPack.id}` : 'default (ask at start)'}\nClick to toggle capture`;
 }
 
 async function tick() {
@@ -49,8 +51,12 @@ async function tick() {
   try {
     const st = await uac(['status']);
     current = st;
-    render(st);
     const c = st?.counts || {};
+    const sig = JSON.stringify([c, st?.session]);
+    if (sig !== lastSig || tickN++ % 5 === 0) {   // ponytail: next pack re-read every ~15s or on change
+      try { nextPack = (await loadPacks()).find((p) => p.next) || null; } catch { nextPack = null; }
+    }
+    render(st);
     const proposed = c.proposed ?? 0;
     if (lastProposed >= 0 && proposed > lastProposed) {
       vscode.window.showInformationMessage(`UAC: ${proposed} proposal${proposed === 1 ? '' : 's'} to review`, 'Review')
@@ -59,7 +65,6 @@ async function tick() {
     lastProposed = proposed;
     if (trees.review) trees.review.view.badge = proposed + (c.conflict ?? 0)
       ? { value: proposed + (c.conflict ?? 0), tooltip: `${proposed} proposed, ${c.conflict ?? 0} conflicts` } : undefined;
-    const sig = JSON.stringify([c, st?.session]);
     if (sig !== lastSig) { lastSig = sig; refreshTrees(); }
     await checkNewSessions();
   } catch (e) {
@@ -76,6 +81,25 @@ async function checkNewSessions() {
   if (!fresh.length) return;
   fresh.forEach((s) => seen.add(s.id));   // prompt once; if ignored, the model asks as usual
   await chooseFlow(fresh);
+}
+
+async function loadPacks() { const r = await uac(['packs']); return Array.isArray(r) ? r : []; }
+const packItem = (p) => ({ label: p.name || p.id, description: `${p.item_ids?.length ?? 0} items${p.next ? ' · next' : ''}`, detail: p.goal || '', p });
+
+async function pickPack(title, extra = []) {
+  const packs = await loadPacks();
+  return vscode.window.showQuickPick([...extra, ...packs.map(packItem)], { title, ignoreFocusOut: true });
+}
+
+async function nextSessionContext() {
+  try {
+    const pick = await pickPack('UAC: context for the next session', [{ label: 'Default (ask at start)', clear: true }]);
+    if (!pick) return;
+    await uac(pick.clear ? ['next', '--clear'] : ['next', '--pack', pick.p.id]);
+    nextPack = pick.clear ? null : pick.p;
+    vscode.window.setStatusBarMessage(`UAC: next session → ${pick.clear ? 'default' : pick.label}`, 4000);
+    lastSig = ''; tick();
+  } catch (e) { fail(e); }
 }
 
 const sessionLabel = (s) => ({ label: s.title || s.id, description: `${s.agent || '?'} · ${s.capture}`, detail: `started ${s.started_at || '?'} · ${s.id}`, s });
@@ -96,14 +120,21 @@ async function chooseFlow(sessions) {
       { label: 'Deep', description: '~10k tokens', v: 'deep' },
       { label: 'Fork', description: 'continue from the last session', v: 'fork' },
       { label: 'None', description: 'start clean', v: 'none' },
+      { label: 'Pack…', description: 'load a saved pack', v: 'pack' },
     ], { title: `UAC: load context for ${s.agent || 'session'} ${s.title || s.id}`, ignoreFocusOut: true });
     if (!tier) return;
+    let packArgs = [];
+    if (tier.v === 'pack') {
+      const p = await pickPack('UAC: which pack?');
+      if (!p) return;
+      tier.v = 'relevant'; tier.label = `Pack ${p.label}`; packArgs = ['--pack', p.p.id];
+    }
     const capture = await vscode.window.showQuickPick([
       { label: '● Capture on', v: 'on' },
       { label: '○ Capture off', v: 'off' },
     ], { title: 'UAC: capture this session?', ignoreFocusOut: true });
     if (!capture) return;
-    await uac(['choose', '--tier', tier.v, '--capture', capture.v, '--session', s.id]);
+    await uac(['choose', '--tier', tier.v, ...packArgs, '--capture', capture.v, '--session', s.id]);
     vscode.window.setStatusBarMessage(`UAC: ${tier.label} context, capture ${capture.v}`, 4000);
     lastSig = ''; tick();
   } catch (e) { fail(e); } finally { asking = false; }
@@ -177,7 +208,7 @@ function memoryItem(m) {
   t.description = m.status === 'active' ? m.type : `${m.type} · ${m.status}`;
   t.tooltip = `${m.title}\n${m.type} · ${m.status} · ${m.id}`;
   t.iconPath = new vscode.ThemeIcon(m.status === 'conflict' ? 'warning' : m.status === 'proposed' ? 'lightbulb' : 'note');
-  t.command = { command: 'uac.openViewer', title: 'Open', arguments: ['memories'] };
+  t.command = { command: 'uac.openViewer', title: 'Open', arguments: [`memories/${m.id}`] };
   return t;
 }
 
@@ -210,7 +241,7 @@ async function loadSessions() {
     t.description = `${s.agent || '?'} · ${s.capture}${s.unsaved ? ` · ${s.unsaved} unsaved` : ''}`;
     t.tooltip = `${s.id}\n${s.status} · started ${s.started_at}`;
     t.iconPath = new vscode.ThemeIcon(s.capture === 'on' ? 'record' : s.capture === 'paused' ? 'debug-pause' : 'circle-outline');
-    if (s.status === 'active') t.command = { command: 'uac.chooseContext', title: 'Choose context', arguments: [s] };
+    t.command = { command: 'uac.openViewer', title: 'Open session', arguments: [`sessions/${s.id}`] };
     return t;
   });
 }
@@ -260,6 +291,7 @@ function activate(context) {
   reg('uac.review', () => openViewer('review'));
   reg('uac.refresh', () => { lastSig = ''; refreshTrees(); tick(); });
   reg('uac.install', install);
+  reg('uac.nextSessionContext', nextSessionContext);
 
   const timer = setInterval(tick, 3000);
   context.subscriptions.push(statusItem, { dispose: () => clearInterval(timer) },

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import sea from 'node:sea';
 import { all, get, run, P } from './db.mjs';
 import * as S from './store.mjs';
+import * as K from './pack.mjs';
 
 // single-executable build embeds viewer.html as an asset; plain node reads it from disk
 const readHtml = () => sea.isSea() ? sea.getAsset('viewer.html', 'utf8')
@@ -61,8 +62,19 @@ const routes = [
   ['GET', /^\/api\/checkpoints$/, (q) => all('SELECT * FROM checkpoints WHERE project_id = ? ORDER BY ts DESC LIMIT 200', q.project)
     .map((c) => ({ ...c, files: P(c.files, []), next_steps: P(c.next_steps, []) }))],
   ['GET', /^\/api\/summaries$/, (q) => all('SELECT * FROM summaries WHERE project_id = ? ORDER BY created_at DESC LIMIT 200', q.project)],
-  ['GET', /^\/api\/packs$/, (q) => all('SELECT * FROM packs WHERE project_id = ? ORDER BY created_at DESC', q.project)
-    .map((k) => ({ ...k, item_ids: P(k.item_ids, []) }))],
+  ['GET', /^\/api\/sessions\/([^/]+)$/, (q, b, id) => S.sessionDetail(id) || (() => { throw Object.assign(new Error('not found'), { code: 404 }); })()],
+  ['GET', /^\/api\/packs$/, (q) => K.listPacks(q.project)],
+  ['POST', /^\/api\/packs$/, (q, b) => {
+    if (!Array.isArray(b.ids) || !b.ids.length) throw new Error('ids required');
+    return K.createPack(S.project(q.project), null, b);
+  }],
+  ['DELETE', /^\/api\/packs\/([^/]+)$/, (q, b, id) => {
+    const k = get('SELECT project_id FROM packs WHERE id = ?', id);
+    if (k && S.nextPack(k.project_id) === id) S.setNextPack(k.project_id, null);
+    run('DELETE FROM packs WHERE id = ?', id); return { ok: true };
+  }],
+  ['GET', /^\/api\/next$/, (q) => ({ pack: S.nextPack(q.project) })],
+  ['PUT', /^\/api\/next$/, (q, b) => ({ pack: S.setNextPack(q.project, b.pack || null) })],
   ['GET', /^\/api\/retrievals$/, (q) => all('SELECT * FROM retrievals WHERE project_id = ? ORDER BY id DESC LIMIT 100', q.project)
     .map((r) => ({ ...r, item_ids: P(r.item_ids, []), reasons: P(r.reasons, {}) }))],
   ['GET', /^\/api\/health$/, (q) => health(q.project)],

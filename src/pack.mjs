@@ -58,8 +58,11 @@ export function menu(s, p, { source } = {}) {
     if (sessions.length) L.push('Recent sessions:\n' + sessions.map((x) => `- ${x.id.slice(0, 12)} · ${x.agent} · ${ago(x.started_at)}${x.title ? ` · ${x.title}` : ''}`).join('\n'));
     if (packs.length) L.push('Packs: ' + packs.map((k) => `${k.id} "${k.name}"`).join(', '));
   }
+  const nextId = S.nextPack(p.id);
+  const nextRow = nextId && get('SELECT id, name FROM packs WHERE id = ?', nextId);
+  if (nextRow) L.push(`The user pre-selected pack ${nextRow.id} "${nextRow.name}" for this session: uac_bootstrap loads it automatically (no need to ask which context).`);
   const q = [];
-  if (!empty) q.push('(1) Load context: Minimal ~1k / Relevant ~4k / Deep ~10k tokens / Fork (project knowledge only, no session state) / None' + (packs.length ? ' / a pack' : ''));
+  if (!empty && !nextRow) q.push('(1) Load context: Minimal ~1k / Relevant ~4k / Deep ~10k tokens / Fork (project knowledge only, no session state) / None' + (packs.length ? ' / a pack' : ''));
   q.push(`(${q.length + 1}) Capture this session? on / off`);
   if (!p.mode) q.push(`(${q.length + 1}) UAC mode for this project: manual (save only on request, review everything) / automatic (auto-save, auto-accept decisions/architecture/lessons)`);
   L.push(`Before starting work, ask the user (use AskUserQuestion if available, in one prompt):\n${q.join('\n')}\n` +
@@ -84,6 +87,9 @@ export function bootstrap(s, p, { tier, budget_tokens, goal, pack, record = true
   if (!pack && choice?.pack) pack = choice.pack;
   if (choice && s) run('UPDATE sessions SET choice = NULL WHERE id = ?', s.id);
   if (choice?.capture && s) S.setCapture(s.id, choice.capture);
+  // user pre-selected a pack for the next session (one-shot)
+  const next = record && !pack ? S.nextPack(p.id) : null;
+  if (next && get('SELECT 1 FROM packs WHERE id = ?', next)) { pack = next; S.setNextPack(p.id, null); }
   tier = TIERS[tier] !== undefined ? tier : 'relevant';
   if (tier === 'none' && !pack) return { text: '[UAC] No context loaded (tier=none).', ids: [], tier };
   const packRow = pack ? get('SELECT * FROM packs WHERE id = ?', pack) : null;
@@ -115,13 +121,18 @@ export function bootstrap(s, p, { tier, budget_tokens, goal, pack, record = true
     const text = `- ${m.status === 'stale' ? '⚠ STALE ' : ''}**${m.title}**: ${m.body.replace(/\n+/g, ' ')}${m.why ? ` (why: ${m.why})` : ''} \`${m.id}\``;
     return { id: m.id, kind: m.type, score, reasons, text };
   });
-  if (!fork) {
-    const cp = latestCheckpoint(p.id);
-    if (cp) items.push({ id: cp.id, kind: '@checkpoint', score: 5, reasons: ['latest checkpoint'], text: fmtCheckpoint(cp) });
-    for (const [i, sm] of all(`SELECT * FROM summaries WHERE project_id = ? ORDER BY created_at DESC LIMIT 5`, p.id).entries())
-      items.push({ id: sm.id, kind: '@summary', score: 1 - i * 0.1 + (pinnedIds.has(sm.id) ? 10 : 0), reasons: ['recent session'],
-        text: `- ${ago(sm.created_at)} **${sm.title}**: ${clip(sm.body.replace(/\n+/g, ' '), 400)} \`${sm.id}\`` });
+  // summaries/checkpoints: recent ones (not in fork), plus any the user put in the pack
+  const cps = fork ? [] : [latestCheckpoint(p.id)].filter(Boolean);
+  const sums = fork ? [] : all(`SELECT * FROM summaries WHERE project_id = ? ORDER BY created_at DESC LIMIT 5`, p.id);
+  for (const id of pinnedIds) {
+    if (id.startsWith('c-') && !cps.some((c) => c.id === id)) { const c = get('SELECT * FROM checkpoints WHERE id = ?', id); if (c) cps.push(c); }
+    if (id.startsWith('s-') && !sums.some((x) => x.id === id)) { const x = get('SELECT * FROM summaries WHERE id = ?', id); if (x) sums.push(x); }
   }
+  for (const [i, cp] of cps.entries())
+    items.push({ id: cp.id, kind: '@checkpoint', score: (pinnedIds.has(cp.id) ? 10 : 0) + (i ? 1 : 5), reasons: [pinnedIds.has(cp.id) ? 'in pack' : 'latest checkpoint'], text: fmtCheckpoint(cp) });
+  for (const [i, sm] of sums.entries())
+    items.push({ id: sm.id, kind: '@summary', score: 1 - i * 0.1 + (pinnedIds.has(sm.id) ? 10 : 0), reasons: [pinnedIds.has(sm.id) ? 'in pack' : 'recent session'],
+      text: `- ${ago(sm.created_at)} **${sm.title}**: ${clip(sm.body.replace(/\n+/g, ' '), 400)} \`${sm.id}\`` });
 
   // pass 1: fill each bucket to its share; pass 2: spend leftovers by score
   const chosen = new Set();
@@ -249,11 +260,18 @@ export function handoff(s, p, name) {
   return { pack: id, how: `In the other session: uac_bootstrap {pack: "${id}"}, or CLI: uac choose --tier relevant --pack ${id}` };
 }
 
-export function createPack(p, s, { name, ids = [], goal, budget_tokens }) {
+export function createPack(p, s, { name, ids = [], goal, budget_tokens, next }) {
   const id = uid('p');
   run('INSERT INTO packs VALUES (?,?,?,?,?,?,?,?)', id, p.id, name || id, goal || '', budget_tokens || TIERS.relevant, J(ids), s?.id ?? null, now());
-  return get('SELECT * FROM packs WHERE id = ?', id);
+  if (next) S.setNextPack(p.id, id);
+  return { ...get('SELECT * FROM packs WHERE id = ?', id), item_ids: ids, next: !!next };
 }
+
+export const listPacks = (projectId) => {
+  const next = S.nextPack(projectId);
+  return all('SELECT * FROM packs WHERE project_id = ? ORDER BY created_at DESC', projectId)
+    .map((k) => ({ ...k, item_ids: P(k.item_ids, []), next: k.id === next }));
+};
 
 export function timeline(p, s, { before = 3, after = 3 } = {}) {
   const sessions = all('SELECT id, agent, started_at, title FROM sessions WHERE project_id = ? ORDER BY started_at', p.id);

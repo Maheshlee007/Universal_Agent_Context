@@ -28,7 +28,7 @@ const TOOLS = [
   ['uac_invalidate', 'Retire a memory that is no longer true (kept in history, not deleted).', obj({ id: str, reason: str, superseded_by: str }, ['id', 'reason'])],
   ['uac_review', 'List memories awaiting user review (proposed) and conflicts. Walk the user through them, then call uac_resolve.', obj({})],
   ['uac_resolve', 'Accept or reject a proposed/conflicting memory after the user decided. Optionally accept with an edited body.', obj({ id: str, action: { type: 'string', enum: ['accept', 'reject'] }, body: str }, ['id', 'action'])],
-  ['uac_pack', 'Create or list named context packs (bundles of memory ids) for reuse by other sessions.', obj({ action: { type: 'string', enum: ['create', 'list'] }, name: str, ids: arr, goal: str, budget_tokens: num }, ['action'])],
+  ['uac_pack', 'Create or list named context packs (memory m-, summary s-, checkpoint c- ids) for reuse by other sessions. next=true makes it the context the NEXT session of this project loads.', obj({ action: { type: 'string', enum: ['create', 'list'] }, name: str, ids: arr, goal: str, budget_tokens: num, next: { type: 'boolean' } }, ['action'])],
   ['uac_handoff', 'Create a pack from this session (checkpoint + top memories) for a parallel or next session. Returns the pack id and how to load it.', obj({ ...sid, name: str })],
   ['uac_digest', 'For the uac-compressor subagent: the unsaved, redacted, pre-filtered events of a session plus an index of existing memories to reconcile against.', obj({ session_id: str, max_chars: num }, ['session_id'])],
   ['uac_save', 'For the uac-compressor subagent: save summary, checkpoint and reconciled memory candidates (op add|update|supersede|conflict|noop) for events up to upto_event_id.',
@@ -81,8 +81,7 @@ const handlers = {
   uac_invalidate: (a) => { S.invalidate(a.id, a.reason, a.superseded_by); return `${a.id} superseded`; },
   uac_review: (a, { p }) => S.review(p.id),
   uac_resolve: (a, { p }) => { const m = S.resolve(a.id, a.action, a.body); S.exportProjectMd(p); return `${m.id} → ${m.status}`; },
-  uac_pack: (a, { s, p }) => a.action === 'create' ? K.createPack(p, s, a)
-    : S.open().prepare('SELECT id, name, goal, budget_tokens, created_at FROM packs WHERE project_id = ? ORDER BY created_at DESC').all(p.id),
+  uac_pack: (a, { s, p }) => a.action === 'create' ? K.createPack(p, s, a) : K.listPacks(p.id),
   uac_handoff: (a, { s, p }) => K.handoff(s, p, a.name),
   uac_digest: (a, { s }) => K.digest(s, a.max_chars),
   uac_save: (a, { s, p }) => K.save(s, p, a),

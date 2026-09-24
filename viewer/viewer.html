@@ -44,9 +44,15 @@ pre{white-space:pre-wrap;word-break:break-word;margin:4px 0;font:12px/1.4 ui-mon
 .row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .st{padding:0 6px;border-radius:3px;font-size:11px;border:1px solid var(--bd)}
 .st-active{color:var(--ok)}.st-proposed{color:var(--acc)}.st-stale,.st-paused{color:var(--warn)}.st-conflict,.st-off{color:var(--bad)}.st-superseded,.st-archived,.st-ended{color:var(--mut)}
-#err{position:fixed;bottom:12px;right:12px;max-width:480px;background:var(--bad);color:#fff;padding:8px 12px;border-radius:6px;display:none;cursor:pointer}
+#err{position:fixed;bottom:60px;right:12px;max-width:480px;background:var(--bad);color:#fff;padding:8px 12px;border-radius:6px;display:none;cursor:pointer}
 .empty{color:var(--mut);padding:20px 0}
 ul{margin:4px 0;padding-left:18px}
+#selbar{position:fixed;bottom:0;left:0;right:0;display:flex;gap:8px;align-items:center;padding:8px 14px;background:var(--card);border-top:1px solid var(--bd);z-index:3}
+#selbar[hidden]{display:none}#selbar input{width:220px}
+main{padding-bottom:70px}
+.next{background:var(--ok)}
+td.ev div{max-height:7em;overflow:auto;white-space:pre-wrap;word-break:break-word;font:12px/1.4 ui-monospace,Consolas,monospace}
+details summary{cursor:pointer;color:var(--mut);margin-top:6px}
 h4{margin:10px 0 4px;font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
 </style>
 </head>
@@ -57,6 +63,7 @@ h4{margin:10px 0 4px;font-size:12px;color:var(--mut);text-transform:uppercase;le
   <nav id="tabs"></nav>
 </header>
 <main id="main"></main>
+<div id="selbar" hidden></div>
 <div id="err" title="Click to dismiss"></div>
 <script>
 'use strict';
@@ -67,9 +74,20 @@ const SCOPES = ['user','project','branch','session'];
 const TABS = [['overview','Overview'],['sessions','Sessions'],['memories','Memories'],['review','Review'],['checkpoints','Checkpoints'],['summaries','Summaries'],['packs','Packs'],['retrievals','Retrievals'],['settings','Settings']];
 const main = document.getElementById('main');
 let project = localStorage.getItem('uac.project') || '';
-let tab = (location.hash.slice(1) in Object.fromEntries(TABS)) ? location.hash.slice(1) : 'overview';
+let tab = 'overview';
 let seq = 0;          // render generation; stale async renders bail out
 let openId = null;    // memory open in the editor
+let openSess = null;  // session open in the detail panel
+let pollFn = null;    // refreshes the sessions list only (keeps the detail panel intact)
+const picked = new Set(); // ids (memory/summary/checkpoint) chosen for a new pack; shared across tabs
+// #tab or #tab/<id> deep links (#memories/<id>, #sessions/<id>)
+function readHash() {
+  const [t, id] = location.hash.slice(1).split('/');
+  if (TABS.some(([k]) => k === t)) tab = t;
+  if (id && t === 'memories') openId = decodeURIComponent(id);
+  if (id && t === 'sessions') openSess = decodeURIComponent(id);
+}
+readHash();
 const mf = { type: '', status: '', q: '' };
 
 // Build DOM safely: strings become text nodes, never HTML.
@@ -102,8 +120,29 @@ const str = (v) => v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : 
 const st = (s) => h('span', { class: 'st st-' + s }, s);
 const empty = (msg) => h('div', { class: 'empty' }, msg);
 const sel = (value, opts, props = {}) => h('select', props, opts.map(o => { const [v, l] = Array.isArray(o) ? o : [o, o]; return h('option', { value: v, selected: v === value }, l); }));
-function act(fn) { return async (e) => { const b = e && e.currentTarget; if (b) b.disabled = true; try { await fn(e); } catch (err) { showErr(err.message); } finally { if (b) b.disabled = false; } }; }
+function act(fn) { return async (e) => { if (e) e.stopPropagation(); const b = e && e.currentTarget; if (b) b.disabled = true; try { await fn(e); } catch (err) { showErr(err.message); } finally { if (b) b.disabled = false; } }; }
 function list(label, v) { const a = arr(v); return a.length ? [h('h4', null, label), h('ul', null, a.map(x => h('li', null, str(x))))] : null; }
+const memLink = (id, label) => h('a', { href: '#memories/' + encodeURIComponent(id) }, label ?? str(id));
+const idLink = (id) => /^[sc]-/.test(str(id)) ? str(id) : memLink(id);
+
+// ---------- pack selection ----------
+const packName = h('input', { type: 'text', placeholder: 'Pack name (optional)' });
+function pickBox(id) {
+  return h('input', { type: 'checkbox', class: 'pk', 'data-id': id, checked: picked.has(id), title: 'Include in a pack',
+    onclick: (e) => e.stopPropagation(), onchange: (e) => { e.target.checked ? picked.add(id) : picked.delete(id); syncPicks(); } });
+}
+const selAll = (box) => h('button', { onclick: () => { box.querySelectorAll('input.pk').forEach(c => picked.add(c.dataset.id)); syncPicks(); } }, 'Select all visible');
+function syncPicks() {
+  document.querySelectorAll('input.pk').forEach(c => c.checked = picked.has(c.dataset.id));
+  const bar = document.getElementById('selbar');
+  bar.hidden = !picked.size;
+  const create = (next) => act(async () => {
+    await api(P('/api/packs'), 'POST', { name: packName.value.trim() || 'selection ' + new Date().toLocaleString(), ids: [...picked], next });
+    picked.clear(); packName.value = ''; syncPicks(); go('packs');
+  });
+  bar.replaceChildren(h('b', null, `${picked.size} selected`), h('button', { onclick: () => { picked.clear(); syncPicks(); } }, 'Clear'), packName,
+    h('button', { onclick: create(false) }, 'Create pack'), h('button', { class: 'pri', onclick: create(true) }, 'Create pack + use for next session'));
+}
 function text(label, v) { return v ? [h('h4', null, label), h('pre', null, str(v))] : null; }
 
 // ---------- chrome ----------
@@ -116,13 +155,15 @@ async function updateBadge() {
   if (!project) return;
   try { const r = await api(P('/api/review')); const n = (r.proposed || []).length + (r.conflicts || []).length; document.getElementById('rbadge').textContent = n || ''; } catch {}
 }
-function go(id) { tab = id; history.replaceState(null, '', location.search + '#' + id); drawTabs(); render(); }
+const setHash = () => { const sub = tab === 'memories' ? openId : tab === 'sessions' ? openSess : null; history.replaceState(null, '', location.search + '#' + tab + (sub ? '/' + encodeURIComponent(sub) : '')); };
+function go(id) { tab = id; setHash(); drawTabs(); render(); }
+window.addEventListener('hashchange', () => { readHash(); drawTabs(); render(); });
 async function render() {
   const my = ++seq;
   if (!project) { main.replaceChildren(empty('No projects yet. Start a session with UAC capture on.')); return; }
   const out = h('div');
   try { await VIEWS[tab](out, () => my === seq); } catch (e) { out.replaceChildren(empty(e.message)); }
-  if (my === seq) main.replaceChildren(out);
+  if (my === seq) { main.replaceChildren(out); syncPicks(); }
 }
 async function loadProjects() {
   const ps = await api('/api/projects');
@@ -135,11 +176,13 @@ async function loadProjects() {
 // ---------- views ----------
 const VIEWS = {
   async overview(out) {
-    const x = await api(P('/api/health'));
+    const [x, nx, ps] = await Promise.all([api(P('/api/health')), api(P('/api/next')).catch(() => ({})), api(P('/api/packs')).catch(() => [])]);
     const c = x.counts || {};
+    const np = nx.pack && (ps.find(p => p.id === nx.pack) || { name: nx.pack });
     const tile = (label, n, cls) => h('div', { class: 'tile' }, h('div', { class: 'n ' + (cls || '') }, n ?? '–'), h('div', { class: 'meta' }, label));
     const ratio = x.raw_chars && x.pack_chars ? (x.raw_chars / x.pack_chars).toFixed(1) + '×' : '–';
     out.append(
+      h('div', { class: 'card' }, 'Next session will load: ', h('b', null, np ? np.name || np.id : 'default (ask)'), ' · ', h('a', { href: '#packs' }, 'change')),
       h('h4', null, 'Memories'),
       h('div', { class: 'tiles' }, STATUSES.map(s => tile(s, c[s] ?? 0, 'st-' + s))),
       h('h4', null, 'Activity'),

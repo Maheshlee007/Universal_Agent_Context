@@ -25,6 +25,29 @@ export const setMode = (projectId, mode) => run('UPDATE projects SET mode = ? WH
 
 export const session = (id) => id && get('SELECT * FROM sessions WHERE id = ?', id);
 
+// One-shot "context for the next session" chosen by the user (viewer / extension / CLI).
+export const nextPack = (projectId) => get(`SELECT value FROM settings WHERE scope = ? AND key = 'next_pack'`, projectId)?.value ?? null;
+export function setNextPack(projectId, packId) {
+  if (packId) run(`INSERT OR REPLACE INTO settings VALUES (?, 'next_pack', ?)`, projectId, packId);
+  else run(`DELETE FROM settings WHERE scope = ? AND key = 'next_pack'`, projectId);
+  return packId || null;
+}
+
+// Everything stored for one session.
+export function sessionDetail(id) {
+  const s = session(id);
+  if (!s) return null;
+  const J2 = (r, ...ks) => { for (const k of ks) r[k] = P(r[k], []); return r; };
+  return {
+    session: s,
+    loaded: P(s.loaded, null),
+    events: all(`SELECT id, ts, kind, tool, target, body FROM events WHERE session_id = ? AND kind != 'pending' ORDER BY id DESC LIMIT 500`, id),
+    summaries: all('SELECT * FROM summaries WHERE session_id = ? ORDER BY created_at DESC', id),
+    checkpoints: all('SELECT * FROM checkpoints WHERE session_id = ? ORDER BY ts DESC', id).map((c) => J2(c, 'files', 'next_steps')),
+    memories: all('SELECT * FROM memories WHERE source_session = ? ORDER BY created_at', id).map(hydrate),
+  };
+}
+
 export function ensureSession({ host, session_id, cwd, transcript_path }) {
   const existing = session(session_id);
   if (existing) return { s: existing, created: false };

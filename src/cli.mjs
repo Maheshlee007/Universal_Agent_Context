@@ -17,7 +17,9 @@ usage: uac <command> [options] [--json] [--cwd DIR]
   capture <on|paused|off>      set capture for the current (or --session) session
   mode <manual|automatic>      set project mode
   choose --tier T [--pack P] [--capture on|off]   pre-select start-of-session context (VS Code extension)
-  sessions [--active]          list sessions
+  sessions [--active]          list sessions            session <id>   everything stored for one session
+  packs | pack --ids a,b [--name N] [--next]           list / create context packs
+  next [--pack P | --clear]    choose the context the NEXT session loads (one-shot)
   search <query>               search memories          get <id...>   show items
   review                       list proposals/conflicts accept|reject <id>
   edit <id>                    edit a memory in $EDITOR   forget <id>   hard-delete a memory
@@ -32,7 +34,8 @@ export async function main(argv) {
     args: argv, allowPositionals: true, strict: false,
     options: { json: { type: 'boolean' }, cwd: { type: 'string' }, session: { type: 'string' }, tier: { type: 'string' },
       pack: { type: 'string' }, capture: { type: 'string' }, port: { type: 'string' }, 'no-open': { type: 'boolean' },
-      'dry-run': { type: 'boolean' }, active: { type: 'boolean' }, type: { type: 'string' }, status: { type: 'string' } },
+      'dry-run': { type: 'boolean' }, active: { type: 'boolean' }, type: { type: 'string' }, status: { type: 'string' },
+      ids: { type: 'string' }, name: { type: 'string' }, next: { type: 'boolean' }, clear: { type: 'boolean' } },
   });
   const out = (data, text) => console.log(o.json ? JSON.stringify(data, null, 1) : (text ?? (typeof data === 'string' ? data : JSON.stringify(data, null, 1))));
   const cwd = o.cwd || process.cwd();
@@ -91,6 +94,32 @@ export async function main(argv) {
       for (const id of args) { run('DELETE FROM memories WHERE id = ?', id); run('DELETE FROM memory_versions WHERE memory_id = ?', id); run('DELETE FROM memory_relations WHERE a = ? OR b = ?', id, id); }
       S.exportProjectMd(proj());
       return out({ ok: true, deleted: args }, `deleted ${args.join(', ')}`);
+    }
+    case 'packs': {
+      const rows = K.listPacks(proj().id);
+      return out(rows, rows.map((k) => `${k.id}${k.next ? ' [NEXT SESSION]' : ''}  ${k.name}  (${k.item_ids.length} items)`).join('\n') || '(no packs)');
+    }
+    case 'pack': {
+      const ids = (o.ids || '').split(',').map((x) => x.trim()).filter(Boolean);
+      if (!ids.length) throw new Error('--ids a,b,c required');
+      const k = K.createPack(proj(), null, { ids, name: o.name, next: !!o.next });
+      return out(k, `created ${k.id} (${ids.length} items)${k.next ? ', loads in the next session' : ''}`);
+    }
+    case 'next': {
+      const p = proj();
+      if (o.clear) return out({ pack: S.setNextPack(p.id, null) }, 'next session: default (ask at start)');
+      if (o.pack) return out({ pack: S.setNextPack(p.id, o.pack) }, `next session loads pack ${o.pack}`);
+      return out({ pack: S.nextPack(p.id) }, `next session: ${S.nextPack(p.id) || 'default (ask at start)'}`);
+    }
+    case 'session': {
+      const d = S.sessionDetail(args[0]);
+      if (!d) throw new Error(`no session ${args[0]}`);
+      return out(d, [`session ${d.session.id} · ${d.session.agent} · capture=${d.session.capture} · ${d.session.status}`,
+        `loaded: ${d.loaded ? JSON.stringify(d.loaded) : 'nothing'}`,
+        ...d.summaries.map((x) => `summary ${x.id}: ${x.title}`),
+        ...d.checkpoints.map((c) => `checkpoint ${c.id} (${c.trigger}): ${c.goal || ''}`),
+        ...d.memories.map((m) => `memory ${m.id} · ${m.type} · ${m.status} · ${m.title}`),
+        `events: ${d.events.length} (latest first)`, ...d.events.slice(0, 20).map((e) => `  ${e.kind} ${e.tool || ''} ${e.target || e.body || ''}`.slice(0, 160))].join('\n'));
     }
     case 'edit': return edit(args[0], out);
     case 'export': { const f = S.exportProjectMd(proj()); return out({ ok: true, file: f }, `wrote ${f}`); }

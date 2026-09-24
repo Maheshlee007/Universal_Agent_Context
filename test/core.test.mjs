@@ -192,6 +192,31 @@ test('compact start re-injects the loaded pack + precompact snapshot', () => {
   assert.match(out.hookSpecificOutput.additionalContext, /compacted[\s\S]*UAC context pack[\s\S]*Pre-compaction snapshot/);
 });
 
+test('user chooses the next session context (dashboard/CLI), one-shot; per-session detail', async () => {
+  const { startViewer } = await import('../src/view.mjs');
+  const { server, url } = await startViewer({ port: 0, token: 'tok2' });
+  const base = new URL(url).origin, pid = cli('status').project.id;
+  const H = { 'x-uac-token': 'tok2', 'content-type': 'application/json' };
+  const summary = S.open().prepare("SELECT id FROM summaries LIMIT 1").get().id;
+  const mem = S.search(pid, 'Never log tokens')[0].id;
+  const k = await (await fetch(`${base}/api/packs?project=${pid}`, { method: 'POST', headers: H, body: JSON.stringify({ name: 'only logging rule', ids: [mem, summary], next: true }) })).json();
+  assert.equal(k.next, true);
+  assert.equal((await (await fetch(`${base}/api/next?project=${pid}`, { headers: H })).json()).pack, k.id);
+  const menuOut = hook('SessionStart', { session_id: 'sess-4', source: 'startup' }).hookSpecificOutput.additionalContext;
+  assert.match(menuOut, /pre-selected pack/);
+  const text = await callTool('uac_bootstrap', { session_id: 'sess-4' }); // no tier given → uses the user's choice
+  assert.match(text, new RegExp(`pack ${k.id}`));
+  assert.match(text, /Never log tokens/);
+  assert.match(text, new RegExp(summary));
+  assert.equal(cli('next').pack, null, 'one-shot: cleared after loading');
+  const d = await (await fetch(`${base}/api/sessions/sess-1`, { headers: H })).json();
+  assert.ok(d.events.length > 10 && d.summaries.length === 1 && d.checkpoints.length >= 1 && d.memories.length >= 2);
+  assert.equal(d.events.some((e) => e.kind === 'pending'), false);
+  assert.equal(cli('session', 'sess-4').loaded.pack, k.id);
+  assert.equal((await fetch(`${base}/api/packs/${k.id}`, { method: 'DELETE', headers: H })).status, 200);
+  server.close();
+});
+
 test('opt-out deletes pending prompts', async () => {
   hook('SessionStart', { session_id: 'sess-3', source: 'startup' });
   hook('UserPromptSubmit', { session_id: 'sess-3', prompt: 'private first prompt' });
