@@ -1,0 +1,11 @@
+{
+  "name": "universal-agent-context",
+  "version": "0.1.0",
+  "description": "Universal Agent Context (UAC): cross-agent session memory and project knowledge for coding agents.",
+  "type": "module",
+  "bin": { "uac": "bin/uac.mjs" },
+  "engines": { "node": ">=22.13" },
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "files": ["bin", "src", "viewer", "agents", "commands", "skills", "hooks", ".claude-plugin", ".mcp.json", "docs"],
+  "license": "MIT"
+}

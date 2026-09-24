@@ -1,0 +1,5 @@
+node_modules/
+*.vsix
+dist/
+extension/cli/
+.uac/policy.local.yml

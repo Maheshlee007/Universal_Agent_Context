@@ -1,0 +1,59 @@
+{
+  "name": "universal-agent-context",
+  "displayName": "Universal Agent Context (UAC)",
+  "description": "Local memory for coding agents: capture toggle, session-start context picker, memory tree and viewer.",
+  "version": "0.1.0",
+  "publisher": "uac-dev",
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Other"],
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "scripts": {
+    "bundle-cli": "node scripts/bundle-cli.mjs",
+    "vscode:prepublish": "node scripts/bundle-cli.mjs"
+  },
+  "contributes": {
+    "commands": [
+      { "command": "uac.toggleCapture", "title": "Toggle Capture", "category": "UAC" },
+      { "command": "uac.pause", "title": "Pause Capture", "category": "UAC" },
+      { "command": "uac.resume", "title": "Resume Capture", "category": "UAC" },
+      { "command": "uac.stop", "title": "Stop Capture", "category": "UAC" },
+      { "command": "uac.chooseContext", "title": "Choose Session Context", "category": "UAC" },
+      { "command": "uac.openViewer", "title": "Open Viewer", "category": "UAC", "icon": "$(link-external)" },
+      { "command": "uac.review", "title": "Review Proposals", "category": "UAC" },
+      { "command": "uac.refresh", "title": "Refresh", "category": "UAC", "icon": "$(refresh)" },
+      { "command": "uac.install", "title": "Install Hooks for Agents", "category": "UAC" }
+    ],
+    "viewsContainers": {
+      "activitybar": [ { "id": "uac", "title": "UAC", "icon": "media/uac.svg" } ]
+    },
+    "views": {
+      "uac": [
+        { "id": "uac.memories", "name": "Memories" },
+        { "id": "uac.review", "name": "Review" },
+        { "id": "uac.sessions", "name": "Sessions" }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        { "command": "uac.refresh", "when": "view == uac.memories || view == uac.review || view == uac.sessions", "group": "navigation" },
+        { "command": "uac.openViewer", "when": "view == uac.memories || view == uac.review || view == uac.sessions", "group": "navigation" }
+      ]
+    },
+    "configuration": {
+      "title": "UAC",
+      "properties": {
+        "uac.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to uac.mjs. Empty = the CLI bundled with the extension (<extension>/cli/bin/uac.mjs)."
+        },
+        "uac.nodePath": {
+          "type": "string",
+          "default": "node",
+          "description": "Node executable (>= 22.13, needs node:sqlite) used to run the CLI."
+        }
+      }
+    }
+  }
+}

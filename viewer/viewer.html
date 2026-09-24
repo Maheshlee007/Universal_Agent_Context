@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>UAC viewer</title>
+<style>
+:root{color-scheme:light dark;--bg:#fafafa;--fg:#1d1f23;--mut:#6b7079;--bd:#dcdfe4;--card:#fff;--acc:#2f6fd6;--ok:#1f8a4c;--bad:#c93a3a;--warn:#b7791f;--hl:#eef3fc}
+@media (prefers-color-scheme:dark){:root{--bg:#15171a;--fg:#e3e5e8;--mut:#8b919a;--bd:#2c3036;--card:#1c1f23;--acc:#5b93ea;--ok:#3fb56f;--bad:#e25c5c;--warn:#d9a441;--hl:#232a36}}
+*{box-sizing:border-box}
+body{margin:0;font:13px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--fg)}
+header{display:flex;gap:12px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--bd);background:var(--card);position:sticky;top:0;z-index:2}
+header b{font-size:14px}
+nav{display:flex;gap:2px;flex-wrap:wrap}
+nav button{background:none;border:0;border-bottom:2px solid transparent;border-radius:0;padding:6px 10px;color:var(--mut)}
+nav button.on{color:var(--fg);border-bottom-color:var(--acc)}
+.badge{display:inline-block;min-width:16px;padding:0 5px;margin-left:4px;border-radius:8px;background:var(--bad);color:#fff;font-size:11px;text-align:center}
+.badge:empty{display:none}
+main{padding:14px;max-width:1400px}
+button,select,input,textarea{font:inherit;color:inherit;background:var(--card);border:1px solid var(--bd);border-radius:4px;padding:3px 8px}
+button{cursor:pointer}button:hover{border-color:var(--acc)}
+button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+button.dng{color:var(--bad)}
+button.sel{background:var(--acc);color:#fff;border-color:var(--acc)}
+textarea{width:100%;min-height:90px;resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+input[type=text],input:not([type]){width:100%}
+table{border-collapse:collapse;width:100%}
+th,td{text-align:left;padding:4px 8px;border-bottom:1px solid var(--bd);vertical-align:top}
+th{color:var(--mut);font-weight:500;font-size:12px}
+tr.click{cursor:pointer}tr.click:hover,tr.cur{background:var(--hl)}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:6px;padding:10px 12px;margin-bottom:10px}
+.card h3{margin:0 0 4px;font-size:14px}
+.meta{color:var(--mut);font-size:12px}
+pre{white-space:pre-wrap;word-break:break-word;margin:4px 0;font:12px/1.4 ui-monospace,Consolas,monospace}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.tile{background:var(--card);border:1px solid var(--bd);border-radius:6px;padding:10px}
+.tile .n{font-size:22px;font-weight:600}
+.split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
+@media (max-width:900px){.split{grid-template-columns:1fr}}
+.bar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.bar input{width:220px}
+.grid{display:grid;grid-template-columns:90px 1fr;gap:6px 10px;align-items:center}
+.grid label{color:var(--mut)}
+.row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.st{padding:0 6px;border-radius:3px;font-size:11px;border:1px solid var(--bd)}
+.st-active{color:var(--ok)}.st-proposed{color:var(--acc)}.st-stale,.st-paused{color:var(--warn)}.st-conflict,.st-off{color:var(--bad)}.st-superseded,.st-archived,.st-ended{color:var(--mut)}
+#err{position:fixed;bottom:12px;right:12px;max-width:480px;background:var(--bad);color:#fff;padding:8px 12px;border-radius:6px;display:none;cursor:pointer}
+.empty{color:var(--mut);padding:20px 0}
+ul{margin:4px 0;padding-left:18px}
+h4{margin:10px 0 4px;font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
+</style>
+</head>
+<body>
+<header>
+  <b>UAC</b>
+  <select id="proj" title="Project"></select>
+  <nav id="tabs"></nav>
+</header>
+<main id="main"></main>
+<div id="err" title="Click to dismiss"></div>
+<script>
+'use strict';
+const TOKEN = new URLSearchParams(location.search).get('t') || '';
+const TYPES = ['fact','decision','constraint','lesson','requirement','preference','warning','idea','task','architecture'];
+const STATUSES = ['proposed','active','stale','conflict','superseded','archived'];
+const SCOPES = ['user','project','branch','session'];
+const TABS = [['overview','Overview'],['sessions','Sessions'],['memories','Memories'],['review','Review'],['checkpoints','Checkpoints'],['summaries','Summaries'],['packs','Packs'],['retrievals','Retrievals'],['settings','Settings']];
+const main = document.getElementById('main');
+let project = localStorage.getItem('uac.project') || '';
+let tab = (location.hash.slice(1) in Object.fromEntries(TABS)) ? location.hash.slice(1) : 'overview';
+let seq = 0;          // render generation; stale async renders bail out
+let openId = null;    // memory open in the editor
+const mf = { type: '', status: '', q: '' };
+
+// Build DOM safely: strings become text nodes, never HTML.
+function h(tag, props, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if (k === 'class') e.className = v;
+    else if (v === true) e.setAttribute(k, '');
+    else if (v !== false && v != null) e.setAttribute(k, v);
+  }
+  for (const c of kids.flat(Infinity)) if (c != null && c !== false) e.append(c instanceof Node ? c : String(c));
+  return e;
+}
+function showErr(msg) { const el = document.getElementById('err'); el.textContent = msg; el.style.display = 'block'; clearTimeout(showErr.t); showErr.t = setTimeout(() => el.style.display = 'none', 8000); }
+document.getElementById('err').onclick = (e) => e.target.style.display = 'none';
+
+async function api(path, method = 'GET', body) {
+  const opt = { method, headers: { 'x-uac-token': TOKEN } };
+  if (body !== undefined) { opt.headers['content-type'] = 'application/json'; opt.body = JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  const data = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(`${method} ${path.split('?')[0]}: ${(data && (data.error || data.message)) || r.status + ' ' + r.statusText}`);
+  return data;
+}
+const P = (path, params = {}) => path + '?' + new URLSearchParams(Object.entries({ project, ...params }).filter(([, v]) => v !== ''));
+const fmt = (t) => { if (t == null || t === '') return ''; const n = Number(t); const d = new Date(isNaN(n) ? t : n < 1e12 ? n * 1000 : n); return isNaN(d) ? String(t) : d.toLocaleString(); };
+const arr = (v) => { if (Array.isArray(v)) return v; if (typeof v === 'string' && /^\s*[\[{]/.test(v)) { try { const p = JSON.parse(v); return Array.isArray(p) ? p : [p]; } catch {} } return v == null || v === '' ? [] : [v]; };
+const str = (v) => v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+const st = (s) => h('span', { class: 'st st-' + s }, s);
+const empty = (msg) => h('div', { class: 'empty' }, msg);
+const sel = (value, opts, props = {}) => h('select', props, opts.map(o => { const [v, l] = Array.isArray(o) ? o : [o, o]; return h('option', { value: v, selected: v === value }, l); }));
+function act(fn) { return async (e) => { const b = e && e.currentTarget; if (b) b.disabled = true; try { await fn(e); } catch (err) { showErr(err.message); } finally { if (b) b.disabled = false; } }; }
+function list(label, v) { const a = arr(v); return a.length ? [h('h4', null, label), h('ul', null, a.map(x => h('li', null, str(x))))] : null; }
+function text(label, v) { return v ? [h('h4', null, label), h('pre', null, str(v))] : null; }
+
+// ---------- chrome ----------
+function drawTabs() {
+  const nav = document.getElementById('tabs');
+  const badge = nav.querySelector('#rbadge')?.textContent || '';
+  nav.replaceChildren(...TABS.map(([id, label]) => h('button', { class: id === tab ? 'on' : '', onclick: () => go(id) }, label, id === 'review' ? h('span', { class: 'badge', id: 'rbadge' }, badge) : null)));
+}
+async function updateBadge() {
+  if (!project) return;
+  try { const r = await api(P('/api/review')); const n = (r.proposed || []).length + (r.conflicts || []).length; document.getElementById('rbadge').textContent = n || ''; } catch {}
+}
+function go(id) { tab = id; history.replaceState(null, '', location.search + '#' + id); drawTabs(); render(); }
+async function render() {
+  const my = ++seq;
+  if (!project) { main.replaceChildren(empty('No projects yet. Start a session with UAC capture on.')); return; }
+  const out = h('div');
+  try { await VIEWS[tab](out, () => my === seq); } catch (e) { out.replaceChildren(empty(e.message)); }
+  if (my === seq) main.replaceChildren(out);
+}
+async function loadProjects() {
+  const ps = await api('/api/projects');
+  const pick = document.getElementById('proj');
+  if (!ps.some(p => p.id === project)) project = ps[0]?.id || '';
+  pick.replaceChildren(...ps.map(p => h('option', { value: p.id, selected: p.id === project, title: p.root }, p.name || p.root)));
+  pick.onchange = () => { project = pick.value; localStorage.setItem('uac.project', project); openId = null; updateBadge(); render(); };
+}
+
+// ---------- views ----------
+const VIEWS = {
+  async overview(out) {
+    const x = await api(P('/api/health'));
+    const c = x.counts || {};
+    const tile = (label, n, cls) => h('div', { class: 'tile' }, h('div', { class: 'n ' + (cls || '') }, n ?? '–'), h('div', { class: 'meta' }, label));
+    const ratio = x.raw_chars && x.pack_chars ? (x.raw_chars / x.pack_chars).toFixed(1) + '×' : '–';
+    out.append(
+      h('h4', null, 'Memories'),
+      h('div', { class: 'tiles' }, STATUSES.map(s => tile(s, c[s] ?? 0, 'st-' + s))),
+      h('h4', null, 'Activity'),
+      h('div', { class: 'tiles' },
+        tile('sessions', x.sessions), tile('events', x.events),
+        tile('avg pack tokens', x.avg_pack_tokens != null ? Math.round(x.avg_pack_tokens) : null),
+        tile('raw chars', x.raw_chars), tile('pack chars', x.pack_chars), tile('compression ratio', ratio)));
+  },
+
+  async sessions(out) {
+    const ss = await api(P('/api/sessions'));
+    if (!ss.length) return out.append(empty('No sessions.'));
+    ss.sort((a, b) => str(a.agent).localeCompare(str(b.agent)) || str(b.started_at).localeCompare(str(a.started_at)));
+    const capBtns = (s) => h('span', { class: 'row', style: 'margin:0' }, ['on', 'paused', 'off'].map(state =>
+      h('button', { class: s.capture === state ? 'sel' : '', onclick: act(async () => { await api(`/api/sessions/${encodeURIComponent(s.id)}/capture`, 'PUT', { state }); render(); }) }, state)));
+    const del = (s) => h('button', { class: 'dng', onclick: act(async () => {
+      if (!confirm(`Delete session ${s.id} and its ${s.events ?? ''} events? This cannot be undone.`)) return;
+      await api(`/api/sessions/${encodeURIComponent(s.id)}`, 'DELETE'); render();
+    }) }, 'Delete');
+    out.append(h('table', null,
+      h('tr', null, ['Agent', 'Title', 'Branch', 'Status', 'Started', 'Ended', 'Events', 'Unsaved', 'Capture', ''].map(t => h('th', null, t))),
+      ss.map(s => h('tr', null,
+        h('td', null, s.agent), h('td', null, s.title || h('span', { class: 'meta' }, s.id)), h('td', null, s.branch),
+        h('td', null, st(s.status)), h('td', null, fmt(s.started_at)), h('td', null, fmt(s.ended_at)),
+        h('td', null, s.events), h('td', null, s.unsaved), h('td', null, capBtns(s)), h('td', null, del(s))))));
+  },
+
+  async memories(out, live) {
+    const listBox = h('div'), detail = h('div');
+    const load = async () => {
+      const ms = await api(P('/api/memories', mf));
+      if (!live()) return;
+      listBox.replaceChildren(ms.length ? h('table', null,
+        h('tr', null, ['Type', 'Title', 'Status', 'Imp', 'Updated'].map(t => h('th', null, t))),
+        ms.map(m => h('tr', { class: 'click' + (m.id === openId ? ' cur' : ''), onclick: (e) => { openId = m.id; openMemory(detail, load); listBox.querySelectorAll('tr.cur').forEach(r => r.classList.remove('cur')); e.currentTarget.classList.add('cur'); } },
+          h('td', null, m.type), h('td', null, m.pinned ? '★ ' : '', m.title), h('td', null, st(m.status)),
+          h('td', null, m.importance != null ? Number(m.importance).toFixed(2) : ''), h('td', null, fmt(m.updated_at))))) : empty('No memories match.'));
+    };
+    let t;
+    const q = h('input', { type: 'text', placeholder: 'Search text…', value: mf.q, oninput: (e) => { clearTimeout(t); t = setTimeout(() => { mf.q = e.target.value; load().catch(err => showErr(err.message)); }, 250); } });
+    const f = (key, opts) => sel(mf[key], [['', 'any ' + key], ...opts], { onchange: (e) => { mf[key] = e.target.value; load().catch(err => showErr(err.message)); } });
+    out.append(h('div', { class: 'bar' }, q, f('type', TYPES), f('status', STATUSES)), h('div', { class: 'split' }, listBox, detail));
+    await load();
+    if (openId) openMemory(detail, load);
+  },
+
+  async review(out) {
+    const r = await api(P('/api/review'));
+    const proposed = r.proposed || [], conflicts = r.conflicts || [];
+    const b = document.getElementById('rbadge'); if (b) b.textContent = (proposed.length + conflicts.length) || '';
+    out.append(h('h4', null, `Proposed (${proposed.length})`));
+    if (!proposed.length) out.append(empty('Nothing awaiting review.'));
+    proposed.forEach(m => out.append(reviewCard(m)));
+    out.append(h('h4', null, `Conflicts (${conflicts.length})`));
+    if (!conflicts.length) out.append(empty('No conflicts.'));
+    conflicts.forEach(({ memory, other }) => out.append(h('div', { class: 'split' }, reviewCard(memory, 'New / conflicting'), other ? memCard(other, 'Existing') : empty('(other side missing)'))));
+  },
+
+  async checkpoints(out) {
+    const cs = await api(P('/api/checkpoints'));
+    if (!cs.length) return out.append(empty('No checkpoints.'));
+    cs.forEach(c => out.append(h('div', { class: 'card' },
+      h('h3', null, c.goal || '(no goal)'),
+      h('div', { class: 'meta' }, [c.trigger, c.session_id, fmt(c.ts)].filter(Boolean).join(' · ')),
+      text('Working', c.state_working ?? c.working), text('Broken', c.state_broken ?? c.broken),
+      list('Files', c.files), list('Next steps', c.next_steps), text('Note for next dev', c.note_for_next_dev ?? c.note))));
+  },
+
+  async summaries(out) {
+    const ss = await api(P('/api/summaries'));
+    if (!ss.length) return out.append(empty('No summaries.'));
+    ss.forEach(s => out.append(h('div', { class: 'card' },
+      h('h3', null, s.title || '(untitled)'),
+      h('div', { class: 'meta' }, [s.level, s.session_id, fmt(s.created_at ?? s.ts),
+        s.tokens_in != null ? `${s.tokens_in} in / ${s.tokens_out} out tokens` : '', s.cost_usd ? '$' + Number(s.cost_usd).toFixed(4) : ''].filter(Boolean).join(' · ')),
+      h('pre', null, str(s.body)))));
+  },
+
+  async packs(out) {
+    const ps = await api(P('/api/packs'));
+    if (!ps.length) return out.append(empty('No packs.'));
+    ps.forEach(p => out.append(h('div', { class: 'card' },
+      h('h3', null, p.name || p.id),
+      h('div', { class: 'meta' }, [p.id, p.budget_tokens ? p.budget_tokens + ' token budget' : '', p.created_by_session, fmt(p.created_at)].filter(Boolean).join(' · ')),
+      text('Goal', p.goal),
+      list('Items', arr(p.items).map(i => typeof i === 'object' ? [i.item_type, i.item_id, i.title].filter(Boolean).join(' · ') : i)))));
+  },
+
+  async retrievals(out) {
+    const rs = await api(P('/api/retrievals'));
+    if (!rs.length) return out.append(empty('No retrievals logged.'));
+    rs.forEach(r => {
+      const ids = arr(r.item_ids);
+      let reasons = r.reasons;
+      if (typeof reasons === 'string') { try { reasons = JSON.parse(reasons); } catch {} }
+      const why = (id, i) => Array.isArray(reasons) ? reasons[i] : reasons && typeof reasons === 'object' ? reasons[id] : '';
+      out.append(h('div', { class: 'card' },
+        h('h3', null, r.goal || '(no goal)'),
+        h('div', { class: 'meta' }, [r.session_id, r.tokens != null ? r.tokens + ' tokens' : '', fmt(r.ts)].filter(Boolean).join(' · ')),
+        ids.length ? h('table', null, h('tr', null, h('th', null, 'Item'), h('th', null, 'Why')),
+          ids.map((id, i) => h('tr', null, h('td', null, str(id)), h('td', null, str(why(id, i)))))) : empty('No items.')));
+    });
+  },
+
+  async settings(out) {
+    const s = await api(P('/api/settings'));
+    const pick = sel(s.mode, ['manual', 'automatic']);
+    const msg = h('span', { class: 'meta' });
+    out.append(h('div', { class: 'card', style: 'max-width:560px' },
+      h('h3', null, 'Capture mode'),
+      h('div', { class: 'meta' }, 'manual: nothing is saved without /uac save, and every proposal waits for review. automatic: capture is on, saves happen at the Stop threshold, and decision/architecture/lesson proposals auto-accept.'),
+      h('div', { class: 'row' }, pick, h('button', { class: 'pri', onclick: act(async () => { const r = await api(P('/api/settings'), 'PUT', { mode: pick.value }); msg.textContent = 'Saved: ' + r.mode; }) }, 'Save'), msg)));
+  },
+};
+
+// ---------- memory detail + review cards ----------
+async function openMemory(box, reload) {
+  const id = openId;
+  box.replaceChildren(empty('Loading…'));
+  let m;
+  try { m = await api(`/api/memories/${encodeURIComponent(id)}`); } catch (e) { box.replaceChildren(empty(e.message)); return; }
+  if (id !== openId) return;
+  const f = {
+    title: h('input', { type: 'text', value: m.title ?? '' }),
+    body: h('textarea', { rows: 8 }, m.body ?? ''),
+    why: h('textarea', { rows: 3 }, m.why ?? ''),
+    type: sel(m.type, TYPES),
+    scope: sel(m.scope, SCOPES),
+    importance: h('input', { type: 'number', min: 0, max: 1, step: 0.05, value: m.importance ?? 0.5, style: 'width:90px' }),
+    pinned: h('input', { type: 'checkbox', checked: !!m.pinned }),
+  };
+  const after = async () => { await reload(); updateBadge(); if (openId) openMemory(box, reload); else box.replaceChildren(); };
+  const save = act(async () => {
+    await api(`/api/memories/${encodeURIComponent(id)}`, 'PUT', {
+      title: f.title.value, body: f.body.value, why: f.why.value, type: f.type.value, scope: f.scope.value,
+      importance: Number(f.importance.value), pinned: f.pinned.checked });
+    await after();
+  });
+  const invalidate = act(async () => { if (!confirm('Mark this memory as superseded?')) return; await api(`/api/memories/${encodeURIComponent(id)}`, 'PUT', { status: 'superseded' }); await after(); });
+  const del = act(async () => { if (!confirm(`Permanently delete ${id}? This cannot be undone.`)) return; await api(`/api/memories/${encodeURIComponent(id)}`, 'DELETE'); openId = null; await after(); });
+  const versions = arr(m.versions), rels = arr(m.relations);
+  box.replaceChildren(h('div', { class: 'card' },
+    h('div', { class: 'meta' }, id, ' · ', st(m.status), ' · source ', m.source || '?', m.source_agent ? ' (' + m.source_agent + ')' : '',
+      m.confidence != null ? ' · confidence ' + m.confidence : '', m.branch ? ' · branch ' + m.branch : '', ' · created ', fmt(m.created_at)),
+    h('div', { class: 'grid', style: 'margin-top:8px' },
+      h('label', null, 'Title'), f.title, h('label', null, 'Body'), f.body, h('label', null, 'Why'), f.why,
+      h('label', null, 'Type'), h('div', null, f.type), h('label', null, 'Scope'), h('div', null, f.scope),
+      h('label', null, 'Importance'), h('div', null, f.importance), h('label', null, 'Pinned'), h('div', null, f.pinned)),
+    h('div', { class: 'row' }, h('button', { class: 'pri', onclick: save }, 'Save'), h('button', { onclick: invalidate, disabled: m.status === 'superseded' }, 'Invalidate'), h('button', { class: 'dng', onclick: del }, 'Delete')),
+    list('Files', m.files),
+    m.review_when ? text('Review when', m.review_when) : null,
+    h('h4', null, `Versions (${versions.length})`),
+    versions.length ? versions.slice().reverse().map(v => h('div', { style: 'border-top:1px solid var(--bd);padding:4px 0' },
+      h('div', { class: 'meta' }, ['v' + (v.version ?? '?'), v.changed_by, fmt(v.ts), v.reason].filter(Boolean).join(' · ')), h('pre', null, str(v.body)))) : empty('No versions.'),
+    h('h4', null, `Relations (${rels.length})`),
+    rels.length ? h('ul', null, rels.map(r => {
+      const other = r.a === id ? r.b : r.a;
+      const link = h('a', { href: '#memories', onclick: (e) => { e.preventDefault(); openId = other; openMemory(box, reload); } }, str(other));
+      return h('li', null, r.a === id ? ['this ', r.rel, ' ', link] : [link, ' ', r.rel, ' this'], r.title ? ' · ' + r.title : '');
+    })) : empty('No relations.')));
+}
+
+function memCard(m, label) {
+  return h('div', { class: 'card' },
+    label ? h('div', { class: 'meta' }, label) : null,
+    h('h3', null, m.title || '(untitled)'),
+    h('div', { class: 'meta' }, m.id, ' · ', m.type, ' · ', st(m.status), m.source_agent ? ' · ' + m.source_agent : '', m.confidence != null ? ' · conf ' + m.confidence : '', ' · ', fmt(m.created_at)),
+    h('pre', null, str(m.body)), text('Why', m.why), list('Files', m.files));
+}
+
+function reviewCard(m, label) {
+  const card = memCard(m, label);
+  const resolve = (action, body) => act(async () => {
+    await api(`/api/memories/${encodeURIComponent(m.id)}/resolve`, 'POST', body !== undefined ? { action, body } : { action });
+    updateBadge(); render();
+  });
+  const row = h('div', { class: 'row' },
+    h('button', { class: 'pri', onclick: resolve('accept') }, 'Accept'),
+    h('button', { class: 'dng', onclick: resolve('reject') }, 'Reject'),
+    h('button', { onclick: () => {
+      const ta = h('textarea', { rows: 8 }, m.body ?? '');
+      const go = h('button', { class: 'pri', onclick: (e) => resolve('accept', ta.value)(e) }, 'Accept edited');
+      row.replaceWith(h('div', null, ta, h('div', { class: 'row' }, go, h('button', { onclick: () => render() }, 'Cancel'))));
+      ta.focus();
+    } }, 'Edit + accept'));
+  card.append(row);
+  return card;
+}
+
+// ---------- boot ----------
+setInterval(() => { if (tab === 'sessions' && !document.hidden && project) render(); }, 5000);
+(async () => {
+  drawTabs();
+  if (!TOKEN) showErr('No token in URL (?t=…). Open the link printed by `uac view`.');
+  try { await loadProjects(); } catch (e) { main.replaceChildren(empty(e.message)); return; }
+  updateBadge();
+  render();
+})();
+</script>
+</body>
+</html>
