@@ -148,7 +148,7 @@ export function bootstrap(s, p, { tier, budget_tokens, goal, pack, record = true
   }
   for (const it of sorted) if (!chosen.has(it) && used + tokens(it.text) <= budget) { chosen.add(it); used += tokens(it.text); }
 
-  let out = `# UAC context pack: ${p.name} (tier ${tier}${packRow ? `, pack ${packRow.id}` : ''}, ~${used} tokens)\n` +
+  let out = `# UAC context pack: ${p.name} (tier ${tier}${packRow ? `, pack ${packRow.id} "${packRow.name}"` : ''}, ~${used} tokens)\n` +
     `Memory can be stale: verify critical facts against the code. More: uac_search → uac_get <ids>. Why an item is here: uac_why <id>.\n`;
   for (const [title, kinds] of BUCKETS) {
     const its = sorted.filter((it) => chosen.has(it) && kinds.includes(it.kind));

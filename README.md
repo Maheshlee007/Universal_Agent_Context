@@ -15,7 +15,9 @@ UAC gives coding agents **memory across sessions, and across different agents**,
 ## Requirements
 Node.js **22.13 or later**, which includes the built-in `node:sqlite`. UAC has no npm dependencies.
 
-If you'd rather not install Node, build the single-file executable instead: `node scripts/build-sea.mjs` produces `dist/uac.exe`, about 82 MB, with its own Node runtime and SQLite.
+If you'd rather not install Node, build the single-file executable instead: `node scripts/build-sea.mjs` produces `dist/uac.exe`, about 82 MB, with its own Node runtime and SQLite. Its hooks, CLI and MCP server work. The dashboard does not run inside the executable yet (see the [known issue](docs/ARCHITECTURE.md#verified-vs-not-verified-2026-09-24)).
+
+Delete `dist/` before running `uac install claude`. Claude Code copies the whole plugin folder into its cache.
 
 ## Install
 

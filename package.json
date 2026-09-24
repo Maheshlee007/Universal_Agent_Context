@@ -1,6 +1,6 @@
 {
   "name": "universal-agent-context",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Universal Agent Context (UAC): cross-agent session memory and project knowledge for coding agents.",
   "type": "module",
   "bin": { "uac": "bin/uac.mjs" },
