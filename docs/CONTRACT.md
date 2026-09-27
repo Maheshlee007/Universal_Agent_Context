@@ -178,3 +178,19 @@ Packs, retrievals and `/api/next` with a pack are kept for power users, but aren
   - Candidates gain `anchors:[{file,symbol,line}]`, plus `op:'verify'` (with `id`) to confirm an existing memory.
 - **`uac_digest`** adds `diff_stat` (git diff --stat since start_commit, including uncommitted changes) and `recheck:[{id,type,title,body,anchors}]`: stale memories whose files this session changed. The compressor must verify, update or invalidate each one.
 - **`uac_handoff`** `{session_id?}` marks this session as the next session's context. Returns what to type in the other session (`#uac continue <n>`).
+
+---
+# v0.3.2 additions: naming, merging and rolling up sessions, empty-session hints, resume cost tip
+- **Session name:**
+  - Set automatically from the first recorded prompt (a short first line). The compressor replaces it with a specific title on save.
+  - The user can rename: inline `#uac name <title>`, CLI `uac name "<title>" [--session n]`, API PUT `/api/sessions/:id {title}`.
+- **Merge sessions** (several → one existing session): CLI `uac merge <n…> --into <n>`, API POST `/api/sessions/merge {ids:[…], into}` → `{ok, into, moved:{events,summaries,checkpoints,memories}}`.
+  - Moves every row of `ids` into `into`, deletes the emptied sessions, and adds one `card` event per merged card, so the next save writes one combined card.
+  - Builds a combined auto card immediately.
+- **Roll up** (many sessions → ONE new card, e.g. "compress all sessions into one"): CLI `uac rollup [n…|--all] [--branch b]`, inline `#uac rollup [n…]`, API POST `/api/sessions/rollup {ids?:[…], all?:true, branch?}` → `{session_id, sources, how}`.
+  - Creates a session `rollup-xxxxxx` (agent `uac`) whose events are the source cards, and gives it an auto card.
+  - The sources get `rolled_into` and are hidden from default lists and start menus. They stay browsable: `uac sessions --all`, or the dashboard's "show rolled-up" toggle.
+  - `how` says: spawn uac-compressor with `session_id=rollup-…` to write the single combined card.
+- **Sessions list items** gain `empty` (bool: no events, no card, no memories), `rolled_into` (id|null) and `title` (always set when known).
+- **`#uac save <n>`** saves a previous session (the model is told to spawn uac-compressor for that session id). The start context tells the user when the latest session ended without an LLM save.
+- **Resume tip:** on SessionStart with source=resume and a large transcript, the context says roughly how many tokens the host reloaded, and that a new session with `#uac continue <n>` costs about 2K instead.

@@ -10,8 +10,9 @@ import { importTranscript } from './import.mjs';
 
 export { target };
 const SKIP_TOOLS = /^(TodoWrite|ToolSearch|TaskList|TaskGet|TaskOutput)$|^mcp__.*uac__uac_/;
-// #uac on|off|pause|resume|save|stop|fresh|deep|import|continue <n…>|msg <text>
-const CONTROL = /(^|\s)#uac\s+(on|off|pause|resume|save|stop|fresh|deep|import|continue|msg)\b([^\n]*)/i;
+// #uac on|off|pause|resume|save [n]|stop|fresh|deep|import|continue <n…>|msg <text>|name <title>|rollup [n…]
+// Only at the start of the message or of a line: "#uac save <n>" quoted inside docs/pasted text must not fire.
+const CONTROL = /(^|\n)#uac\s+(on|off|pause|resume|save|stop|fresh|deep|import|continue|msg|name|rollup)\b([^\n]*)/i;
 const saveInstruction = (sid) =>
   `[UAC] Save requested. Spawn the uac-compressor subagent (Agent/Task tool, subagent_type "uac-compressor") with the prompt "session_id=${sid}". If subagents are unavailable, do its steps yourself: uac_digest → uac_save. Then continue.`;
 const str = (v) => (v == null ? null : typeof v === 'string' ? v : JSON.stringify(v));
@@ -21,7 +22,18 @@ function control(s, p, cmd, rest) {
     case 'on': case 'resume': S.setCapture(s.id, 'on'); return '[UAC] Recording on.';
     case 'off': S.setCapture(s.id, 'off'); return '[UAC] Recording off for this session.';
     case 'pause': K.precompactSnapshot(s); S.setCapture(s.id, 'paused'); return '[UAC] Recording paused (checkpoint written).';
-    case 'save': return saveInstruction(s.id);
+    case 'save': { // "#uac save" = this session; "#uac save 3" = session #3 (e.g. one that ended unsaved, or a rollup)
+      const ref = rest.split(/[\s,]+/).filter(Boolean)[0];
+      const id = ref ? S.resolveSessionRefs(p.id, [ref])[0] : s.id;
+      if (!id) return `[UAC] No session "${ref}". Type "#uac continue" to see the numbers.`;
+      return saveInstruction(id);
+    }
+    case 'name': S.renameSession(s.id, rest); return `[UAC] Session named "${rest.trim()}".`;
+    case 'rollup': {
+      const refs = rest.split(/[\s,]+/).filter(Boolean);
+      const r = K.rollup(p, refs.length ? { refs } : { all: true, branch: p.branch });
+      return `[UAC] ${r.how} Do it now: spawn uac-compressor with "session_id=${r.session_id}".`;
+    }
     case 'stop': S.setCapture(s.id, 'off'); return `${saveInstruction(s.id)}\n[UAC] Recording stops after this save.`;
     case 'fresh': return `[UAC] Reloaded with project knowledge only (no session state):\n\n${K.bootstrap(S.session(s.id), p, { fresh: true }).text}`;
     case 'deep': return `[UAC] Deeper context:\n\n${K.bootstrap(S.session(s.id), p, { depth: 'deep', sessions: (JSON.parse(s.loaded || '{}').sessions) || [] }).text}`;
@@ -68,10 +80,17 @@ export function handle(ev) {
       const needStart = created || (!s.ctx_at && !S.unsavedCount(s) && ev.source !== 'compact');
       if (needStart) out.push(K.startContext(s, p));
       const m = CONTROL.exec(ev.prompt || '');
-      if (m) { const r = control(s, p, m[2].toLowerCase(), (m[3] || '').trim()); if (r) out.push(r); }
+      if (m) {
+        let r;
+        try { r = control(s, p, m[2].toLowerCase(), (m[3] || '').trim()); } catch (e) { r = `[UAC] ${e.message}`; }
+        if (r) out.push(r);
+      }
       const cur = S.session(s.id);
       const text = (ev.prompt || '').replace(CONTROL, ' ').trim();
-      if (text && cur.capture === 'on') S.addEvent(cur, 'prompt', { body: text });
+      if (text && cur.capture === 'on') {
+        S.addEvent(cur, 'prompt', { body: text });
+        if (!cur.title) S.renameSession(cur.id, clip(redact(text.split('\n')[0]), 60)); // named at start; the compressor improves it on save
+      }
       if (text && cur.capture === 'ask') S.addEvent(cur, 'pending', { body: text }); // kept only if the user opts in
       if (!created && p.mode !== 'off') {
         const msgs = S.unreadMessages(cur);

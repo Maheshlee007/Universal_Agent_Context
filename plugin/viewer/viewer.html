@@ -53,6 +53,10 @@ pre,.mbody{white-space:pre-wrap;word-break:break-word;margin:4px 0;font:12px/1.4
 .st-active{color:var(--ok)}.st-proposed{color:var(--acc)}.st-stale{color:var(--warn)}.st-conflict{color:var(--bad)}.st-superseded,.st-archived{color:var(--mut)}
 .mem{padding:8px 0}.mem+.mem{border-top:1px solid var(--bd)}
 .mem .mbody{font-family:inherit;font-size:13px;max-height:9em;overflow:auto}
+.card.dim{opacity:.55}.card.dim:hover{opacity:.85}
+.card.rolled{border-style:dashed}
+.sh input.ren{flex:1;width:auto;font-size:14px}
+.pick{margin:0}
 .nexttog{display:flex;gap:4px;align-items:center;font-size:12px;white-space:nowrap;cursor:pointer}
 #toast{position:fixed;bottom:14px;right:12px;max-width:480px;background:var(--bad);color:#fff;padding:8px 12px;border-radius:6px;display:none;cursor:pointer;z-index:5}
 #toast.ok{background:var(--ok)}
@@ -98,7 +102,8 @@ let focusSess = null;    // #sessions/<id>
 const openCards = new Set();   // expanded session cards survive polling
 const openEvents = new Set();  // expanded raw-events lists
 const dcache = new Map();      // session id -> /api/sessions/:id detail
-const sf = { branch: '' };
+const sf = { branch: '', rolled: false, into: '', notice: null };
+const picked = new Set();      // session ids ticked for merge / rollup
 const kf = { q: '', all: false };
 
 function readHash() {
@@ -156,7 +161,7 @@ const list = (label, v) => { const a = arr(v); return a.length ? [h('h4', null, 
 const text = (label, v) => v ? [h('h4', null, label), h('pre', null, str(v))] : null;
 // native replaceChildren stringifies arrays and null; h() flattens, so mirror that
 const fill = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter(k => k != null && k !== false));
-const sTitle = (s) => s.card?.title || s.title || '(untitled session)';
+const sTitle = (s) => s.title || s.card?.title || '(untitled session)';
 
 // "Delete" -> "Confirm delete (…)" -> action. Reverts after 4s. confirmLabel may be an async function.
 function twoStep(label, confirmLabel, onConfirm, cls = 'dng') {
@@ -206,25 +211,61 @@ async function loadProjects() {
   const pick = document.getElementById('proj');
   if (!projects.some(p => p.id === project)) project = projects[0]?.id || '';
   pick.replaceChildren(...projects.map(p => h('option', { value: p.id, selected: p.id === project, title: p.root }, p.name || p.root)));
-  pick.onchange = () => { project = pick.value; localStorage.setItem('uac.project', project); openCards.clear(); dcache.clear(); sf.branch = ''; go(tab); updateBadge(); };
+  pick.onchange = () => { project = pick.value; localStorage.setItem('uac.project', project); openCards.clear(); dcache.clear(); picked.clear(); sf.branch = ''; sf.notice = null; go(tab); updateBadge(); };
 }
 
 // ---------- views ----------
 const VIEWS = {
   async sessions(out, live) {
-    const banner = h('div', { class: 'card banner' }), bar = h('div', { class: 'bar' }), listBox = h('div');
-    out.append(banner, bar, listBox);
-    let sig = '';
+    const banner = h('div', { class: 'card banner' }), notice = h('div'), bar = h('div', { class: 'bar' }), selBar = h('div'), listBox = h('div');
+    out.append(banner, notice, bar, selBar, listBox);
+    let sig = '', ss = [];
+    const byId = (id) => ss.find(s => s.id === id);
     const setNext = (ids) => act(async () => { await api(P('/api/next'), 'PUT', { sessions: ids }); await load(true); });
+    const rollup = async (body) => {
+      sf.notice = await api(P('/api/sessions/rollup'), 'POST', body);
+      picked.clear(); await load(true);
+    };
+    const drawNotice = () => {
+      const r = sf.notice;
+      if (!r) return notice.replaceChildren();
+      const n = byId(r.session_id)?.n ?? r.session_id;
+      fill(notice, h('div', { class: 'card nextc' },
+        h('b', null, `Rolled ${arr(r.sources).length} session${arr(r.sources).length === 1 ? '' : 's'} up into #${n}.`),
+        r.how ? h('pre', null, str(r.how)) : null,
+        h('div', { class: 'row' }, h('span', null, 'Type ', h('b', { class: 'mono' }, `#uac save ${n}`), ' in your chat to let the agent write the combined card.'),
+          h('span', { style: 'flex:1' }), h('button', { onclick: () => { sf.notice = null; drawNotice(); } }, 'Dismiss'))));
+    };
+    const drawSel = () => {
+      const ids = ss.filter(s => picked.has(s.id) && !s.rolled_into).map(s => s.id);
+      if (ids.length < 2) return fill(selBar, ids.length ? h('div', { class: 'meta', style: 'margin-bottom:10px' }, '1 selected: tick another session to merge or roll up.') : null);
+      if (!ids.includes(sf.into)) sf.into = ids[0];
+      const target = sel(sf.into, ids.map(id => [id, `#${byId(id).n} ${sTitle(byId(id))}`]), { onchange: (e) => { sf.into = e.target.value; } });
+      fill(selBar, h('div', { class: 'card banner' },
+        h('b', null, `${ids.length} selected`), h('span', { class: 'meta' }, 'Merge into…'), target,
+        twoStep('Merge', () => `Confirm merge ${ids.length - 1} into #${byId(target.value)?.n}`, async () => {
+          const into = target.value, from = ids.filter(x => x !== into);
+          const r = await api(P('/api/sessions/merge'), 'POST', { ids: from, into });
+          picked.clear(); [...from, into].forEach(id => dcache.delete(id)); from.forEach(id => openCards.delete(id));
+          const m = r?.moved; toast(`Merged into #${byId(into)?.n}` + (m ? ': moved ' + Object.entries(m).map(([k, v]) => `${v} ${k}`).join(', ') : ''), true);
+          await load(true);
+        }),
+        h('button', { title: 'Create one new session whose card combines the selected cards; the sources are hidden', onclick: act(() => rollup({ ids })) }, 'Roll up into one card'),
+        h('span', { style: 'flex:1' }),
+        h('button', { onclick: () => { picked.clear(); load(true).catch(err => toast(err.message)); } }, 'Clear selection')));
+    };
+    const onPick = (id, on) => { on ? picked.add(id) : picked.delete(id); drawSel(); };
     const load = async (force) => {
-      const [ss, nx] = await Promise.all([api(P('/api/sessions')), api(P('/api/next')).catch(() => ({}))]);
+      const [list, nx] = await Promise.all([api(P('/api/sessions', { all: sf.rolled ? '1' : '' })), api(P('/api/next')).catch(() => ({}))]);
       if (!live()) return;
       // never clobber an armed two-step button or a half-typed input during a background poll
-      if (!force && main.querySelector('button.armed, input:focus, textarea:focus')) return;
-      const s2 = JSON.stringify([ss, nx, sf.branch]);
+      if (!force && main.querySelector('button.armed, input:not([type=checkbox]):focus, textarea:focus')) return;
+      const s2 = JSON.stringify([list, nx, sf.branch, sf.rolled]);
       if (!force && s2 === sig) return;
-      sig = s2;
-      ss.forEach((s, i) => { if (s.n == null) s.n = i + 1; });
+      sig = s2; ss = list;
+      // number visible (non-rolled-up) sessions only, matching `#uac continue <n>` even when all=1
+      let k = 0; ss.forEach(s => { s.n = s.rolled_into ? null : ++k; });
+      for (const id of picked) if (!byId(id) || byId(id).rolled_into) picked.delete(id);
       const nextIds = Array.isArray(nx.sessions) ? nx.sessions : ss.filter(s => s.next).map(s => s.id);
       const chosen = nextIds.map(id => ss.find(s => s.id === id) || { id, n: '?', title: id });
       fill(banner, ...(chosen.length
@@ -232,16 +273,21 @@ const VIEWS = {
         : [h('span', null, h('b', null, 'Default: '), 'the next session continues from the latest session on the same branch.'), h('span', { class: 'meta' }, 'Tick "Continue from this" on any card to choose instead.')]));
       const branches = [...new Set(ss.map(s => s.branch).filter(Boolean))].sort();
       // server only removes empty sessions older than 30 min (a live session may not have events yet)
-      const emptyN = ss.filter(s => !Number(s.events) && !s.card && !Number(s.memories_created) && Date.now() - toDate(s.started_at) > 30 * 60e3).length;
-      fill(bar, 
+      const emptyN = ss.filter(s => isEmpty(s) && !s.rolled_into && Date.now() - toDate(s.started_at) > 30 * 60e3).length;
+      const shown = ss.filter(s => !sf.branch || s.branch === sf.branch);
+      const rollN = shown.filter(s => !s.rolled_into && s.card).length; // server rolls up carded sessions only
+      fill(bar,
         sel(sf.branch, [['', 'All branches'], ...branches.map(b => [b, 'Branch ' + b])], { onchange: (e) => { sf.branch = e.target.value; load(true).catch(err => toast(err.message)); } }),
         emptyN ? twoStep(`Delete empty sessions (${emptyN})`, `Confirm delete ${emptyN} empty session${emptyN > 1 ? 's' : ''}`, async () => {
           const r = await api(P('/api/sessions/cleanup'), 'POST', { empty: true });
           toast(`Deleted ${r?.deleted ?? 0} empty session(s)`, true); await load(true);
         }) : null,
+        rollN > 1 ? twoStep(sf.branch ? `Roll up all on ⎇ ${sf.branch}` : 'Roll up all sessions', `Confirm roll up ${rollN} sessions into one card`,
+          () => rollup(sf.branch ? { all: true, branch: sf.branch } : { all: true }), '') : null,
+        h('label', { class: 'meta' }, h('input', { type: 'checkbox', checked: sf.rolled, onchange: (e) => { sf.rolled = e.target.checked; load(true).catch(err => toast(err.message)); } }), ' Show rolled-up sessions'),
         h('span', { class: 'meta' }, `${ss.length} session${ss.length === 1 ? '' : 's'}`));
-      const shown = ss.filter(s => !sf.branch || s.branch === sf.branch);
-      listBox.replaceChildren(...(shown.length ? shown.map(s => sessionCard(s, nextIds, load)) : [empty('No sessions yet.')]));
+      drawNotice(); drawSel();
+      listBox.replaceChildren(...(shown.length ? shown.map(s => sessionCard(s, nextIds, load, { onPick, byId })) : [empty('No sessions yet.')]));
     };
     pollFn = () => { load().catch(() => {}); updateBadge(); };
     await load(true);
@@ -365,8 +411,28 @@ const VIEWS = {
 };
 
 // ---------- sessions ----------
-function sessionCard(s, nextIds, reload) {
-  const isNext = nextIds.includes(s.id);
+const isEmpty = (s) => s.empty ?? (!Number(s.events) && !s.card && !Number(s.memories_created));
+function sessionCard(s, nextIds, reload, { onPick, byId }) {
+  const isNext = nextIds.includes(s.id), rolled = s.rolled_into, emp = isEmpty(s);
+  const titleEl = h('h3', null, sTitle(s));
+  const rename = (e) => {
+    e.stopPropagation();
+    if (!titleEl.isConnected) return;
+    const back = () => { if (inp.isConnected && !inp.disabled) inp.replaceWith(titleEl); };
+    const inp = h('input', { type: 'text', class: 'ren', value: s.title || s.card?.title || '', placeholder: 'Session name', onclick: (e) => e.stopPropagation(), onblur: back,
+      onkeydown: async (e) => {
+        if (e.key === 'Escape') return back();
+        if (e.key !== 'Enter') return;
+        const t = inp.value.trim();
+        if (!t) return toast('Type a name first');
+        inp.disabled = true;
+        try {
+          await api(`/api/sessions/${enc(s.id)}`, 'PUT', { title: t });
+          s.title = t; titleEl.textContent = t; inp.replaceWith(titleEl); toast('Renamed', true); await reload(true);
+        } catch (err) { inp.disabled = false; inp.focus(); toast(err.message); }
+      } });
+    titleEl.replaceWith(inp); inp.focus(); inp.select();
+  };
   const body = h('div');
   const cap = s.capture === 'on' ? pill('● recording', 'ok') : s.capture === 'paused' ? pill('paused', 'warn') : pill('not recording');
   const toggle = () => {
@@ -388,16 +454,23 @@ function sessionCard(s, nextIds, reload) {
     const ids = e.target.checked ? [...nextIds.filter(x => x !== s.id), s.id] : nextIds.filter(x => x !== s.id);
     await api(P('/api/next'), 'PUT', { sessions: ids }); await reload(true);
   }) });
-  const card = h('div', { class: 'card' + (isNext ? ' nextc' : '') + (s.id === focusSess ? ' focus' : ''), id: 's-' + s.id },
+  const pickIn = rolled ? null : h('input', { type: 'checkbox', class: 'pick', title: 'Select for merge / roll up', checked: picked.has(s.id),
+    onclick: (e) => e.stopPropagation(), onchange: (e) => onPick(s.id, e.target.checked) });
+  const into = rolled && byId(rolled);
+  const card = h('div', { class: 'card' + (isNext ? ' nextc' : '') + (emp || rolled ? ' dim' : '') + (rolled ? ' rolled' : '') + (s.id === focusSess ? ' focus' : ''), id: 's-' + s.id },
     h('div', { class: 'sh', onclick: toggle },
-      h('span', { class: 'n' }, openCards.has(s.id) ? '▾' : '▸', ' #' + s.n),
-      h('h3', null, sTitle(s)),
-      h('label', { class: 'nexttog', title: 'Load this session card into the next session (pick one or several)', onclick: (e) => e.stopPropagation() }, nextIn, 'Continue from this in next session')),
+      pickIn,
+      h('span', { class: 'n' }, openCards.has(s.id) ? '▾' : '▸', s.n != null ? ' #' + s.n : ''),
+      titleEl,
+      h('button', { title: 'Rename', onclick: rename }, '✎'),
+      rolled ? null : h('label', { class: 'nexttog', title: 'Load this session card into the next session (pick one or several)', onclick: (e) => e.stopPropagation() }, nextIn, 'Continue from this in next session')),
     h('div', { class: 'row', style: 'margin-top:2px' },
       h('span', { class: 'meta' }, [s.agent, s.model, s.branch && '⎇ ' + s.branch, ago(s.ended_at || s.started_at)].filter(Boolean).join(' · ')),
       cap,
+      rolled ? h('a', { class: 'pill acc', href: '#sessions/' + enc(rolled), onclick: (e) => e.stopPropagation() }, 'rolled into ' + (into?.n != null ? '#' + into.n : rolled)) : null,
+      emp ? pill('empty · can delete', 'warn', 'No events, no card, no memories') : null,
       s.card?.quality === 'auto' ? pill('auto card', 'warn', 'Built without an LLM because the session ended unsaved. Save it to refine.') : null,
-      !s.card ? pill('no card') : null,
+      !s.card && !emp ? pill('no card') : null,
       Number(s.unsaved) > 0 ? pill(`unsaved ${s.unsaved}`, 'acc') : null,
       Number(s.memories_created) > 0 ? pill(`${s.memories_created} memories`) : null,
       h('span', { style: 'flex:1' }), del),

@@ -75,7 +75,7 @@ export function open() {
 
 // v0.3 columns/tables. ADD COLUMN is idempotent here (duplicate-column errors are ignored).
 const V3_COLUMNS = [
-  ['sessions', 'model TEXT'], ['sessions', 'quality TEXT'], ['sessions', 'ctx_at TEXT'], ['memories', 'hashes TEXT'],
+  ['sessions', 'model TEXT'], ['sessions', 'quality TEXT'], ['sessions', 'ctx_at TEXT'], ['sessions', 'rolled_into TEXT'], ['memories', 'hashes TEXT'],
   ['memories', 'anchors TEXT'], ['memories', 'muted INTEGER DEFAULT 0'], ['memories', 'source_model TEXT'],
   ['memories', 'resolved_by TEXT'], ['memories', 'resolved_at TEXT'], ['memories', 'verified_commit TEXT'],
   ['checkpoints', 'superseded_by TEXT'], ['summaries', 'quality TEXT'], ['summaries', 'model TEXT'],

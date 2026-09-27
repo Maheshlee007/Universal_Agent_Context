@@ -13,8 +13,10 @@ const SECRETS = [
   /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, // JWT
   /\b(Bearer)\s+[A-Za-z0-9._~+/-]{16,}=*/gi,
   /\b([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)[^\s@/]+@/gi,                    // scheme://user:PASS@
-  /\b((?:password|passwd|pwd|secret|api[_-]?key|token|access[_-]?key)\s*[:=]\s*)["']?[^\s"',;]{4,}/gi,
 ];
+// key=value / key: value secrets. Code must survive: `verifyToken(token: string)`, `secret: env.JWT_SECRET`, `token = getToken()`.
+const KEYVAL = /\b(password|passwd|pwd|secret|api[_-]?key|token|access[_-]?key)(\s*[:=]\s*)(["']?)([^\s"',;)}]{4,})/gi;
+const CODE_VALUE = /^(string|number|boolean|null|undefined|any|unknown|object|void|never|true|false|[A-Z][A-Za-z0-9_]*(<.*)?|(process\.)?env\.\w+|\$\{.*|<.*|\w+\(.*|\w+\.\w+.*|\[REDACTED\])$/;
 const PII = [
   /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
   /\b(?:\d{1,3}\.){3}\d{1,3}\b/g,
@@ -25,6 +27,11 @@ export function redact(text) {
   let s = String(text).replace(/<private>[\s\S]*?<\/private>/gi, '[PRIVATE]');
   for (const re of SECRETS) s = s.replace(re, (m, keep) =>
     (typeof keep === 'string' && m.startsWith(keep) ? keep : '') + '[REDACTED]' + (m.endsWith('@') ? '@' : ''));
+  s = s.replace(KEYVAL, (m, key, sep, q, val) => {
+    if (CODE_VALUE.test(val)) return m;                                     // a type, env reference or call, not a secret
+    if (!/^p(ass)?w/i.test(key) && val.length < 8) return m;                // token/secret values are long; passwords may not be
+    return `${key}${sep}${q}[REDACTED]`;
+  });
   for (const re of PII) s = s.replace(re, '[PII]');
   return s;
 }
@@ -73,6 +80,12 @@ export function git(cwd, ...args) {
   const out = r.status === 0 ? r.stdout.trim() : '';
   if (key) gitCache.set(key, out);
   return out;
+}
+
+// Untrimmed stdout (file contents via `git show`), null on failure.
+export function gitRaw(cwd, ...args) {
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 3000, windowsHide: true, maxBuffer: 16 << 20 });
+  return r.status === 0 ? r.stdout : null;
 }
 
 export function gitInfo(cwd) {

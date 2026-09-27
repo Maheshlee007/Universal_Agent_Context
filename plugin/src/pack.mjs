@@ -1,5 +1,6 @@
 // Start context (injected by the hook), session-centric bootstrap, digest/save for the compressor,
 // deterministic auto cards, checkpoints, handoff, packs.
+import fs from 'node:fs';
 import { all, get, run, tx, uid, now, J, P, checkpointWal } from './db.mjs';
 import * as S from './store.mjs';
 import { changedFiles, tokens, clip, git } from './util.mjs';
@@ -114,13 +115,18 @@ export function bootstrap(s, p, opts = {}) {
   const must = items.filter((i) => ['requirement', 'constraint'].includes(i.kind)).sort((a, b) => b.score - a.score);
   const know = items.filter((i) => !['requirement', 'constraint'].includes(i.kind)).sort((a, b) => b.score - a.score);
 
-  // 3. other active branches (parallel work awareness)
+  // 3. other active branches (parallel work awareness). A branch whose tip is behind HEAD and contained in it was merged here.
+  // ponytail: a fresh branch cut from an older commit also looks "merged"; fast-forward merges look "active". Session status would refine this.
+  const head = git(p.root, 'rev-parse', 'HEAD');
+  const merged = p.branch ? new Set(git(p.root, 'branch', '--merged', 'HEAD', '--format=%(refname:short) %(objectname)').split(/\r?\n/)
+    .map((l) => l.split(' ')).filter(([b, sha]) => b && sha !== head).map(([b]) => b)) : new Set();
   const others = p.branch ? all(`SELECT s.branch, MAX(s.started_at) AS at FROM sessions s WHERE s.project_id = ? AND s.branch IS NOT NULL
-      AND s.branch != ? AND s.started_at >= ? GROUP BY s.branch ORDER BY at DESC LIMIT 5`, p.id, p.branch, new Date(Date.now() - 14 * 864e5).toISOString())
+      AND s.branch != ? AND s.started_at >= ? GROUP BY s.branch ORDER BY at DESC LIMIT 8`, p.id, p.branch, new Date(Date.now() - 14 * 864e5).toISOString())
+    .sort((a, b) => merged.has(a.branch) - merged.has(b.branch)).slice(0, 5)
     .map((b) => {
       const latest = numbered.find((x) => x.branch === b.branch);
       const c = latest?.card;
-      return `- \`${b.branch}\`: ${c?.title ? `"${clip(c.title, 90)}"` : latest?.title ? `"${clip(latest.title, 90)}"` : '(no card yet)'} · ${latest?.agent || ''} · ${ago(b.at)}${c?.files?.length ? ` · files: ${c.files.slice(0, 5).join(', ')}` : ''}`;
+      return `- \`${b.branch}\`${merged.has(b.branch) ? ` (merged into \`${p.branch}\`)` : ''}: ${c?.title ? `"${clip(c.title, 90)}"` : latest?.title ? `"${clip(latest.title, 90)}"` : '(no card yet)'} · ${latest?.agent || ''} · ${ago(b.at)}${c?.files?.length ? ` · files: ${c.files.slice(0, 5).join(', ')}` : ''}`;
     }) : [];
 
   // 4. messages for this session/branch
@@ -185,8 +191,19 @@ export function startContext(s, p, { source } = {}) {
   // only sessions worth continuing from (a card or some recorded events)
   const recent = S.listSessions(p.id, { limit: 20 }).filter((x) => x.id !== s.id && (x.card || x.events)).slice(0, 5);
   if (recent.length) L.push(`Sessions (for "#uac continue <n>"): ${recent.map((x) => `#${x.n} ${sessionLabel(x)} [${x.branch || '-'}]`).join(' · ')}`);
-  if (unsaved.length && p.mode === 'automatic')
-    L.push(`Session ${unsaved[0].session_id} ended without an LLM save (auto card made). When convenient (not before answering the user), spawn the uac-compressor subagent with "session_id=${unsaved[0].session_id}" to refine it.`);
+  // sessions that ended without an LLM save (they already have an auto card): tell the user, in both modes
+  const pendingSave = S.listSessions(p.id, { limit: 20 }).filter((x) => x.id !== s.id && x.card?.quality === 'auto' && x.unsaved >= 3).slice(0, 3);
+  if (pendingSave.length && p.mode === 'automatic')
+    L.push(`Session #${pendingSave[0].n} ended without a full save (auto card made). When convenient (not before answering the user), spawn the uac-compressor subagent with "session_id=${pendingSave[0].id}" to refine it.`);
+  else if (pendingSave.length)
+    L.push(`Unsaved previous session(s): ${pendingSave.map((x) => `#${x.n} "${clip(x.card.title, 50)}"`).join(', ')} (auto card only). Tell the user once: "#uac save <n>" lets you write a full card; the dashboard can delete them instead.`);
+  // resumed sessions: the host re-sends the whole old conversation; a new session + card is far cheaper
+  if (source === 'resume' && s.transcript_path) {
+    let bytes = 0;
+    try { bytes = fs.statSync(s.transcript_path).size; } catch {}
+    const est = Math.round(bytes / 4 / 3); // transcript JSONL is ~3x the text it carries
+    if (est > 20000) L.push(`Tip for the user: resuming reloaded this whole conversation (~${Math.round(est / 1000)}K tokens, re-billed unless the prompt cache is still warm). Next time: start a new session and type "#uac continue <n>" to load this session's card (~2K tokens) instead.`);
+  }
   const uncaptured = get(`SELECT COUNT(*) AS n FROM sessions WHERE project_id = ? AND id != ? AND capture IN ('off','ask') AND transcript_path IS NOT NULL
       AND started_at >= ? AND NOT EXISTS (SELECT 1 FROM summaries x WHERE x.session_id = sessions.id)`, p.id, s.id, new Date(Date.now() - 3 * 864e5).toISOString()).n;
   if (uncaptured && p.mode) L.push(`${uncaptured} recent session(s) ran without recording; "uac import <n>" can recover one from its transcript.`);
@@ -225,6 +242,7 @@ export function digest(s, maxChars = 60000) {
     else if (e.kind === 'tool_fail') lines.push(`  FAILED ${e.tool} ${e.target || ''}: ${clip(e.body, 400)}`);
     else if (e.kind === 'subagent') lines.push(`  subagent result: ${clip(e.body, 600)}`);
     else if (e.kind === 'assistant') lines.push(`ASSISTANT: ${clip(e.body, 800)}`);
+    else if (e.kind === 'card') lines.push(`PREVIOUS SESSION CARD (merge/rollup, combine into one):\n${clip(e.body, 2500)}`);
     else lines.push(`  ${e.kind}: ${clip(e.body, 300)}`);
   }
   let text = lines.join('\n');
@@ -315,7 +333,9 @@ export function autoCard(s) {
   const fails = evs.filter((e) => e.kind === 'tool_fail').slice(-3);
   const last = evs.filter((e) => e.kind === 'assistant').at(-1)?.body;
   const goal = prompts[0]?.body || s.title || '';
-  const title = clip(`${clip(goal.replace(/\s+/g, ' '), 70)}${allFiles.length ? ` (${allFiles.slice(0, 2).map((f) => f.split(/[\\/]/).pop()).join(', ')})` : ''}`, 120);
+  // the session's name wins (auto-named from the first prompt, or renamed by the user)
+  const title = s.title ? clip(s.title, 120)
+    : clip(`${clip(goal.replace(/\s+/g, ' '), 70)}${allFiles.length ? ` (${allFiles.slice(0, 2).map((f) => f.split(/[\\/]/).pop()).join(', ')})` : ''}`, 120);
   run(`DELETE FROM summaries WHERE session_id = ? AND quality = 'auto'`, s.id);
   run(`DELETE FROM checkpoints WHERE session_id = ? AND trigger = 'auto'`, s.id);
   run('INSERT INTO summaries(id, session_id, project_id, title, body, raw_chars, created_at, quality) VALUES (?,?,?,?,?,?,?,?)',
@@ -338,6 +358,63 @@ export function precompactSnapshot(s) {
   while (JSON.stringify(c).length > 2000 && c.files.length) c.files.pop();
   if (JSON.stringify(c).length > 2000) c.broken = '';
   return addCheckpoint(s, c, 'precompact');
+}
+
+// Card text of a session, as an event the compressor reads when combining sessions.
+function addCardEvent(into, fromId) {
+  const src = S.session(fromId), c = S.card(fromId);
+  if (!src || !c) return false;
+  S.addEvent(into, 'card', { body: fmtCard(c, cardMeta(src)), target: fromId });
+  return true;
+}
+
+// Merge several sessions INTO an existing one: every row moves, the emptied sessions disappear,
+// and the merged cards become 'card' events so the next save writes one combined card.
+export function mergeSessions(projectId, refs, intoRef) {
+  const [into] = S.resolveSessionRefs(projectId, [intoRef]);
+  const ids = S.resolveSessionRefs(projectId, refs).filter((id) => id !== into);
+  if (!into || !ids.length) throw new Error('merge needs at least one session and a different target (see "uac sessions")');
+  const target = S.session(into);
+  const moved = { events: 0, summaries: 0, checkpoints: 0, memories: 0 };
+  tx(() => {
+    for (const id of ids) {
+      addCardEvent(target, id);
+      moved.events += run('UPDATE events SET session_id = ? WHERE session_id = ?', into, id).changes;
+      moved.summaries += run('UPDATE summaries SET session_id = ? WHERE session_id = ?', into, id).changes;
+      moved.checkpoints += run('UPDATE checkpoints SET session_id = ? WHERE session_id = ?', into, id).changes;
+      moved.memories += run('UPDATE memories SET source_session = ? WHERE source_session = ?', into, id).changes;
+      run('UPDATE retrievals SET session_id = ? WHERE session_id = ?', into, id);
+      run('UPDATE messages SET from_session = ? WHERE from_session = ?', into, id);
+      run('UPDATE sessions SET rolled_into = ? WHERE rolled_into = ?', into, id);
+      run('DELETE FROM message_reads WHERE session_id = ?', id);
+      run('DELETE FROM sessions WHERE id = ?', id);
+    }
+    run(`UPDATE sessions SET saved_event_id = 0, quality = NULL WHERE id = ?`, into); // needs one combined save
+  });
+  autoCard(S.session(into));
+  S.setNextSessions(projectId, S.nextSessions(projectId).map((x) => (ids.includes(x) ? into : x)).filter((x, i, a) => a.indexOf(x) === i));
+  return { ok: true, into, merged: ids, moved };
+}
+
+// Roll up many sessions into ONE new session/card ("compress all sessions into a single memory").
+// Sources are kept (history) but hidden; the rollup's card becomes the one future sessions continue from.
+export function rollup(p, { refs = [], all: everything = false, branch } = {}, by) {
+  const ids = everything
+    ? S.listSessions(p.id, { limit: 500 }).filter((x) => x.card && (!branch || x.branch === branch)).map((x) => x.id)
+    : S.resolveSessionRefs(p.id, refs);
+  const withCards = ids.filter((id) => S.card(id));
+  if (withCards.length < 2) throw new Error('rollup needs at least 2 sessions that have cards');
+  const id = uid('rollup');
+  const br = branch || S.session(withCards[0]).branch || p.branch;
+  run(`INSERT INTO sessions(id, project_id, agent, branch, start_commit, capture, status, started_at, ended_at, title)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`, id, p.id, 'uac', br, p.commit, 'off', 'ended', now(), now(), `Rollup of ${withCards.length} sessions${br ? ` on ${br}` : ''}`);
+  const r = S.session(id);
+  for (const sid of [...withCards].reverse()) addCardEvent(r, sid); // oldest first
+  run(`UPDATE sessions SET rolled_into = ? WHERE id IN (SELECT value FROM json_each(?))`, id, J(withCards));
+  autoCard(S.session(id));
+  const n = S.listSessions(p.id, { limit: 200 }).find((x) => x.id === id)?.n;
+  return { session_id: id, n, sources: withCards,
+    how: `Rollup session #${n} created from ${withCards.length} cards. To write ONE combined card: type "#uac save ${n}" in your chat (the agent spawns uac-compressor with session_id=${id}).` };
 }
 
 // "Continue this work elsewhere": the next session (any agent/branch) continues from this one.

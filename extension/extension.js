@@ -8,6 +8,7 @@ let ext, statusItem, viewerProc, viewerUrlP, panel;
 let current = null;              // last `uac status` result
 let lastProposed = -1, lastSig = '', busy = false;
 let seenMsgs = null;             // message ids already shown (null = not seeded yet)
+let emptyCount = 0, showRolled = false;
 const trees = {};
 
 const cfg = () => vscode.workspace.getConfiguration('uac');
@@ -53,7 +54,8 @@ function render(st, err) {
   const c = st?.counts || {};
   statusItem.tooltip = `UAC · ${st?.project?.name || 'no project'} (${mode || 'mode not set'})\n` +
     `session: ${st?.session?.id || 'none'} · recording ${cap === 'on' ? 'on' : 'off'}\n` +
-    `${c.active ?? 0} active · ${c.proposed ?? 0} proposed · ${c.stale ?? 0} stale · ${c.conflict ?? 0} conflicts\nClick for actions`;
+    `${c.active ?? 0} active · ${c.proposed ?? 0} proposed · ${c.stale ?? 0} stale · ${c.conflict ?? 0} conflicts\n` +
+    (emptyCount ? `${emptyCount} empty session${emptyCount === 1 ? '' : 's'} (click → Delete empty)\n` : '') + 'Click for actions';
 }
 
 async function tick() {
@@ -72,7 +74,10 @@ async function tick() {
     lastProposed = proposed;
     if (trees.review) trees.review.view.badge = todo ? { value: todo, tooltip: `${todo} items need a decision` } : undefined;
     const sig = JSON.stringify([c, st?.session, st?.project?.mode]);
-    if (sig !== lastSig) { lastSig = sig; refreshTrees(); }
+    if (sig !== lastSig) {
+      lastSig = sig; refreshTrees();
+      try { emptyCount = (await list(['sessions'])).filter((s) => s.empty).length; render(st); } catch { /* keep last count */ }
+    }
   } catch (e) {
     render(null, e);
   } finally { busy = false; }
@@ -155,6 +160,53 @@ async function deleteEmpty() {
   } catch (e) { fail(e); }
 }
 
+// ---------- rename / merge / roll up (v0.3.2) ----------
+// `--opt=value` form: parses as a string even on CLI builds that don't declare the option.
+async function renameSession(s) {
+  if (!s?.id) return;
+  const t = await vscode.window.showInputBox({ title: `UAC: rename ${sessTitle(s)}`, value: s.card?.title || s.title || '', ignoreFocusOut: true });
+  if (!t?.trim()) return;
+  try { await uac(['name', t.trim(), `--session=${s.id}`]); refreshTrees(); } catch (e) { fail(e); }
+}
+
+async function mergeSession(s) {
+  if (!s?.id) return;
+  try {
+    const items = (await list(['sessions'])).filter((x) => x.id !== s.id && !x.rolled_into)
+      .map((x) => ({ label: sessTitle(x), description: sessDesc(x), x }));
+    const to = await vscode.window.showQuickPick(items, { title: `UAC: merge ${sessTitle(s)} into…`, ignoreFocusOut: true });
+    if (!to) return;
+    const ok = await vscode.window.showWarningMessage(`Merge ${sessTitle(s)} into ${sessTitle(to.x)}?`,
+      { modal: true, detail: 'Its events, cards and memories move to the target; the emptied session is deleted.' }, 'Merge');
+    if (ok !== 'Merge') return;
+    await uac(['merge', s.id, `--into=${to.x.id}`]);
+    refreshTrees();
+  } catch (e) { fail(e); }
+}
+
+async function rollupSessions() {
+  try {
+    const b = current?.project?.branch;
+    const sessions = (await list(['sessions'])).filter((x) => !x.rolled_into && !x.empty);
+    const picks = await vscode.window.showQuickPick([
+      ...(b ? [{ label: `$(git-branch) All on this branch (${b})`, all: true }] : []),
+      ...sessions.map((x) => ({ label: sessTitle(x), description: sessDesc(x), x })),
+    ], { canPickMany: true, title: 'UAC: roll up which sessions into one new card?', ignoreFocusOut: true });
+    if (!picks?.length) return;
+    const r = await uac(picks.some((p) => p.all) ? ['rollup', '--all', `--branch=${b}`] : ['rollup', ...picks.filter((p) => p.x).map((p) => p.x.id)]);
+    refreshTrees();
+    const n = r?.n ?? (await list(['sessions'])).find((x) => x.id === r?.session_id)?.n ?? r?.session_id ?? '<n>';
+    vscode.window.showInformationMessage(r?.how ? `UAC: ${r.how} (or let automatic mode refine it)`
+      : `UAC: Rollup session created. In your chat type: #uac save ${n} (or let automatic mode refine it)`);
+  } catch (e) { fail(e); }
+}
+
+function setShowRolled(v) {
+  showRolled = v;
+  vscode.commands.executeCommand('setContext', 'uac.showRolled', v);
+  trees.sessions?.refresh();
+}
+
 // ---------- status-bar menu ----------
 async function setMode() {
   const m = await vscode.window.showQuickPick([
@@ -182,6 +234,7 @@ async function menu() {
     { label: '$(save) Save now', description: 'type #uac save in chat', run: () =>
       vscode.window.showInformationMessage('UAC: type "#uac save" in the agent chat. The agent runs the compressor; the extension cannot.') },
     { label: '$(debug-continue) Continue from session…', run: () => continueFrom() },
+    { label: '$(fold) Roll up sessions…', run: rollupSessions },
     { label: '$(link-external) Open dashboard', run: () => openViewer() },
     { label: '$(settings-gear) Mode: off / manual / automatic', description: current?.project?.mode || 'not set', run: setMode },
     { label: '$(trash) Delete empty sessions', run: deleteEmpty },
@@ -280,14 +333,17 @@ async function loadReview() {
 }
 
 async function loadSessions() {
-  const sessions = await list(['sessions']);
+  const sessions = (await list(showRolled ? ['sessions', '--all'] : ['sessions'])).filter((s) => showRolled || !s.rolled_into);
+  emptyCount = sessions.filter((s) => s.empty).length;
   if (!sessions.length) return [new vscode.TreeItem('No sessions yet')];
   return sessions.map((s) => {
     const t = new vscode.TreeItem(sessTitle(s));
-    t.description = [s.branch, s.agent, s.next && 'next'].filter(Boolean).join(' · ');
+    t.description = s.empty ? '(empty, can delete)'
+      : [s.branch, s.agent, s.next && 'next', s.rolled_into && `rolled into ${s.rolled_into}`].filter(Boolean).join(' · ');
     t.tooltip = `${s.id}\n${s.status} · started ${s.started_at}${s.card ? `\n\n${s.card.body || ''}` : '\nno card yet'}`;
-    t.iconPath = new vscode.ThemeIcon(s.capture === 'on' ? 'record' : s.card ? 'note' : 'circle-outline');
-    t.contextValue = 'session';
+    t.iconPath = s.empty ? new vscode.ThemeIcon('circle-outline', new vscode.ThemeColor('disabledForeground'))
+      : new vscode.ThemeIcon(s.capture === 'on' ? 'record' : s.rolled_into ? 'fold' : s.card ? 'note' : 'circle-outline');
+    t.contextValue = s.empty ? 'session.empty' : 'session';
     t.session = s;
     t.command = { command: 'uac.openViewer', title: 'Open session', arguments: [`sessions/${s.id}`] };
     return t;
@@ -340,6 +396,11 @@ function activate(context) {
   reg('uac.openSession', (item) => item?.session && openViewer(`sessions/${item.session.id}`));
   reg('uac.deleteSession', (item) => deleteSession(item?.session));
   reg('uac.deleteEmpty', deleteEmpty);
+  reg('uac.renameSession', (item) => renameSession(item?.session));
+  reg('uac.mergeSession', (item) => mergeSession(item?.session));
+  reg('uac.rollup', rollupSessions);
+  reg('uac.showRolled', () => setShowRolled(true));
+  reg('uac.hideRolled', () => setShowRolled(false));
   reg('uac.sendMessage', sendMessage);
   reg('uac.openViewer', (hash) => openViewer(hash));
   reg('uac.review', () => openViewer('review'));

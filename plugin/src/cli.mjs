@@ -21,7 +21,10 @@ usage: uac <command> [options] [--json] [--cwd DIR]
   capture on|paused|off          recording for the current session
   sessions [--active]            numbered list (#1 = newest)       session <n|id>   everything stored for one session
   next <n…> | --clear            the next session continues from these sessions (one-shot)
-  rm <n|id…> | --empty [--yes]   delete sessions (cascades events, card, memories they created)
+  rm <n|id…> | --empty [--yes]   delete sessions (cascades events, card, memories they created) · --dry-run shows counts
+  name "<title>" [--session n]   rename a session (auto-named from its first prompt)
+  merge <n…> --into <n>          merge sessions into one (next save writes one combined card)
+  rollup [n…] [--all] [--branch b]   compress many sessions into ONE card (originals hidden, kept; see --all in sessions)
   search <q> | get <id…>         search / show memories
   review                         decide low-confidence proposals & conflicts (interactive: y/n/e/s)
   edit <id> | forget <id…>       edit a memory in $EDITOR / hard-delete memories
@@ -47,7 +50,8 @@ export async function main(argv) {
       pack: { type: 'string' }, capture: { type: 'string' }, port: { type: 'string' }, 'no-open': { type: 'boolean' },
       'dry-run': { type: 'boolean' }, active: { type: 'boolean' }, type: { type: 'string' }, status: { type: 'string' },
       ids: { type: 'string' }, name: { type: 'string' }, next: { type: 'boolean' }, clear: { type: 'boolean' },
-      empty: { type: 'boolean' }, yes: { type: 'boolean' }, to: { type: 'string' }, sessions: { type: 'string' } },
+      empty: { type: 'boolean' }, yes: { type: 'boolean' }, to: { type: 'string' }, sessions: { type: 'string' },
+      into: { type: 'string' }, all: { type: 'boolean' }, branch: { type: 'string' } },
   });
   const out = (data, text) => console.log(o.json ? JSON.stringify(data, null, 1) : (text ?? (typeof data === 'string' ? data : JSON.stringify(data, null, 1))));
   const cwd = o.cwd || process.cwd();
@@ -83,9 +87,27 @@ export async function main(argv) {
       return out({ ok: true }, `choice stored for ${s.id}`);
     }
     case 'sessions': {
-      const rows = S.listSessions(proj().id, { active: o.active });
+      const rows = S.listSessions(proj().id, { active: o.active, all: o.all });
       return out(rows, rows.map((r) => `#${String(r.n).padEnd(3)} ${(r.card?.title || r.title || `${r.agent} session, ${r.events} events, no card`).slice(0, 70).padEnd(70)} [${r.branch || '-'}] ${r.agent}${r.model ? `/${r.model}` : ''} · ${ago(r.started_at)}` +
         `${r.card ? (r.card.quality === 'auto' ? ' · auto card' : ' · card') : ''}${r.unsaved ? ` · ${r.unsaved} unsaved` : ''}${r.capture === 'on' ? ' · REC' : ''}${r.next ? ' · NEXT' : ''}`).join('\n') || '(no sessions)');
+    }
+    case 'name': {
+      const p = proj(); const s = sess(p);
+      const t = args.join(' ');
+      S.renameSession(s.id, t);
+      return out({ ok: true, session_id: s.id, title: t }, `named ${s.id}: ${t}`);
+    }
+    case 'merge': {
+      const p = proj();
+      const into = o.into;
+      if (!into) throw new Error('usage: uac merge <n…> --into <n>');
+      const r = K.mergeSessions(p.id, args, into);
+      return out(r, `merged ${r.merged.length} session(s) into ${r.into} (moved ${r.moved.events} events, ${r.moved.memories} memories). Next save writes one combined card: "#uac save" in that session, or "#uac save <n>".`);
+    }
+    case 'rollup': {
+      const p = proj();
+      const r = K.rollup(p, { refs: args, all: o.all || !args.length, branch: o.branch });
+      return out(r, r.how);
     }
     case 'session': {
       const p = proj();
@@ -107,7 +129,8 @@ export async function main(argv) {
       const ids = S.resolveSessionRefs(p.id, args);
       if (!ids.length) throw new Error(`no sessions match ${args.join(' ')} (see "uac sessions")`);
       S.setNextSessions(p.id, ids);
-      return out({ sessions: ids }, `next session continues from: ${ids.join(', ')}`);
+      const list = S.listSessions(p.id, { limit: 200 });
+      return out({ sessions: ids }, `next session continues from:\n${ids.map((id) => { const x = list.find((r) => r.id === id); return `  #${x?.n} ${x ? K.sessionLabel(x, 80) : id}`; }).join('\n')}`);
     }
     case 'rm': {
       const p = proj();

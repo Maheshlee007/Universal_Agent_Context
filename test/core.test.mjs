@@ -38,6 +38,8 @@ test('redaction and ignore globs', () => {
   assert.ok(!/abcdefghij|hunter2|supersecret|a@b\.com/.test(r), r);
   assert.match(r, /postgres:\/\/bob:\[REDACTED\]@db/);
   assert.ok(ignored(repo, '.env.local') && ignored(repo, 'config/secrets/x.json') && !ignored(repo, 'src/auth.js'));
+  for (const code of ['verifyToken(token: string): string | null', 'secret: env.JWT_SECRET', 'const token = getToken()'])
+    assert.equal(redact(code), code, 'code is not a secret');
 });
 
 test('first run: context injected, ONE mode question, nothing recorded until opt-in; near-empty warning', () => {
@@ -59,6 +61,9 @@ test('capture: pending prompt promoted on opt-in; subagent/own tools/ignored fil
   assert.match(ctxOf(hook('UserPromptSubmit', { prompt: '#uac pause please' })), /paused/);
   hook('PostToolUse', { tool_name: 'Read', tool_input: { file_path: 'src/secret-while-paused.js' }, tool_response: 'x' });
   hook('UserPromptSubmit', { prompt: '#uac resume' });
+  // quoted/indented text (docs, pasted reports) must not trigger controls
+  assert.doesNotMatch(ctxOf(hook('UserPromptSubmit', { prompt: 'the README says:\n  type #uac off to stop, or `#uac save <n>`' })), /Recording off|Save requested|No session/);
+  assert.equal(S.session('sess-1').capture, 'on');
   const dg = await callTool('uac_digest', { session_id: 'sess-1' });
   assert.match(dg.events, /USER: Add refresh token rotation/);
   assert.match(dg.events, /FAILED Bash npm test/);
@@ -166,6 +171,10 @@ test('branches: other active branch shown; messages delivered once cross-session
   assert.match(c, /Messages for you[\s\S]*fetchUser/);
   const again = ctxOf(hook('UserPromptSubmit', { session_id: 'sess-5', prompt: 'hello' }));
   assert.doesNotMatch(again, /fetchUser/, 'delivered once');
+  g('checkout', '-q', 'feature/ui'); g('commit', '-q', '--allow-empty', '-m', 'ui work'); g('checkout', '-q', 'main');
+  g('commit', '-q', '--allow-empty', '-m', 'main moved'); g('merge', '-q', '--no-ff', 'feature/ui', '-m', 'merge ui');
+  const afterMerge = K.bootstrap(S.session('sess-5'), S.projectFor(repo), { record: false }).text;
+  assert.match(afterMerge, /`feature\/ui` \(merged into `main`\)/);
 });
 
 test('#uac continue <n> loads chosen sessions; multi-session bootstrap merges; fresh = knowledge only', async () => {
@@ -198,6 +207,52 @@ test('save consolidates: loaded checkpoints on the same branch are superseded', 
   S.addEvent(S.session('sess-6'), 'prompt', { body: 'more' });
   await callTool('uac_save', { session_id: 'sess-6', upto_event_id: 1e9, summary: { title: 'Continue UI work 2' }, checkpoint: { goal: 'ui2', note: 'n' }, candidates: [] });
   assert.ok(S.open().prepare('SELECT superseded_by FROM checkpoints WHERE id = ?').get(loaded[0]).superseded_by);
+});
+
+test('sessions are auto-named from the first prompt; #uac name renames; empty flag', () => {
+  hook('SessionStart', { session_id: 'sess-nm', source: 'startup' });
+  hook('UserPromptSubmit', { session_id: 'sess-nm', prompt: 'Add pagination to the users list\nmore details' });
+  assert.equal(S.session('sess-nm').title, 'Add pagination to the users list');
+  assert.match(ctxOf(hook('UserPromptSubmit', { session_id: 'sess-nm', prompt: '#uac name Users pagination' })), /named/);
+  assert.equal(S.session('sess-nm').title, 'Users pagination');
+  hook('SessionStart', { session_id: 'sess-empty', source: 'startup' });
+  assert.equal(S.listSessions(pid()).find((x) => x.id === 'sess-empty').empty, true);
+  assert.equal(S.listSessions(pid()).find((x) => x.id === 'sess-nm').empty, false);
+});
+
+test('merge sessions into one: rows move, one combined card on next save', async () => {
+  const s = S.session('sess-nm');
+  S.addEvent(S.session('sess-nm'), 'tool', { tool: 'Edit', target: 'src/users.js' });
+  K.autoCard(S.session('sess-nm'));
+  const list = S.listSessions(pid());
+  const n = (id) => String(list.find((x) => x.id === id).n);
+  const r = cli('merge', n('sess-nm'), '--into', n('sess-ui'));
+  assert.deepEqual(r.merged, ['sess-nm']);
+  assert.equal(S.session('sess-nm'), undefined);
+  const dg = await callTool('uac_digest', { session_id: 'sess-ui' });
+  assert.match(dg.events, /PREVIOUS SESSION CARD[\s\S]*Users pagination/);
+});
+
+test('rollup: many sessions → one new card; sources hidden but kept; #uac save <n> targets it', async () => {
+  const before = S.listSessions(pid()).filter((x) => x.card).length;
+  const r = cli('rollup', '--all');
+  assert.ok(r.sources.length >= 2 && r.session_id.startsWith('rollup-'));
+  const visible = S.listSessions(pid());
+  assert.ok(visible.every((x) => !r.sources.includes(x.id)), 'sources hidden');
+  assert.equal(S.listSessions(pid(), { all: true }).filter((x) => r.sources.includes(x.id)).length, r.sources.length, 'sources kept');
+  assert.ok(visible.find((x) => x.id === r.session_id).card, 'rollup has an auto card');
+  const c = ctxOf(hook('UserPromptSubmit', { session_id: 'sess-2', prompt: `#uac save ${r.n}` }));
+  assert.match(c, new RegExp(`session_id=${r.session_id}`));
+  const dg = await callTool('uac_digest', { session_id: r.session_id });
+  assert.ok((dg.events.match(/PREVIOUS SESSION CARD/g) || []).length === r.sources.length && before >= 2);
+});
+
+test('resume of a long session shows the token-cost tip', () => {
+  const tp = path.join(tmp, 'long.jsonl');
+  fs.writeFileSync(tp, 'x'.repeat(400000));
+  hook('SessionStart', { session_id: 'sess-long', source: 'startup', transcript_path: tp });
+  assert.match(ctxOf(hook('SessionStart', { session_id: 'sess-long', source: 'resume', transcript_path: tp })), /resuming reloaded this whole conversation \(~\d+K tokens/);
+  cli('rm', 'sess-long', '--yes');
 });
 
 test('SessionEnd without a save builds an auto card; nothing is lost', () => {
@@ -264,17 +319,19 @@ test('mode off: one line, nothing recorded, no questions', () => {
   cli('mode', 'automatic');
 });
 
-test('dashboard API: token, sessions with cards, cascade delete, next, verify, mute, messages, cleanup', async () => {
+test('dashboard API: token, sessions with cards, cascade delete, next, verify, mute, messages, cleanup', async (t) => {
   const { startViewer } = await import('../plugin/src/view.mjs');
   const { server, url } = await startViewer({ port: 0, token: 'tok' });
+  t.after(() => server.close()); // a failed assertion must not leave the server keeping the test process alive
   const base = new URL(url).origin, P2 = pid();
   const H = { 'x-uac-token': 'tok', 'content-type': 'application/json' };
   const j = async (p, m = 'GET', b) => (await fetch(base + p, { method: m, headers: H, body: b && JSON.stringify(b) })).json();
   assert.equal((await fetch(`${base}/api/projects`)).status, 401);
   const sessions = await j(`/api/sessions?project=${P2}`);
-  const s1 = sessions.find((x) => x.id === 'sess-1');
+  const s1 = sessions.find((x) => x.card && x.n); // earlier rollup test hid sess-1 inside a rollup; any visible carded session works
   assert.ok(s1.n >= 1 && s1.card.title);
-  assert.deepEqual((await j(`/api/next?project=${P2}`, 'PUT', { sessions: [String(s1.n)] })).sessions, ['sess-1']);
+  assert.deepEqual((await j(`/api/next?project=${P2}`, 'PUT', { sessions: [String(s1.n)] })).sessions, [s1.id]);
+  assert.ok((await j(`/api/sessions?project=${P2}&all=1`)).some((x) => x.rolled_into && x.n === null), 'rolled-up sessions listed with all=1, unnumbered');
   const mem = (await j(`/api/memories?project=${P2}`)).find((m) => m.id === decisionId);
   assert.ok(mem.freshness);
   assert.equal((await j(`/api/memories/${decisionId}/verify`, 'POST')).id, decisionId);

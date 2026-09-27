@@ -36,8 +36,17 @@ const routes = [
   ['GET', /^\/api\/projects$/, () => S.listProjects()],
   ['POST', /^\/api\/projects\/merge$/, (q, b) => { S.mergeProjects(b.from, b.into); return { ok: true }; }],
   ['DELETE', /^\/api\/projects\/([^/]+)$/, (q, b, id) => { S.deleteProject(id); return { ok: true }; }],
-  ['GET', /^\/api\/sessions$/, (q) => S.listSessions(q.project, { limit: 200 })],
+  ['GET', /^\/api\/sessions$/, (q) => S.listSessions(q.project, { limit: 200, all: !!q.all })],
   ['POST', /^\/api\/sessions\/cleanup$/, (q) => ({ deleted: S.cleanupEmpty(q.project) })],
+  ['POST', /^\/api\/sessions\/merge$/, (q, b) => {
+    const pid = q.project || S.session(b.into)?.project_id;
+    return K.mergeSessions(pid, b.ids || [], b.into);
+  }],
+  ['POST', /^\/api\/sessions\/rollup$/, (q, b) => {
+    const pr = S.project(q.project) || notFound();
+    return K.rollup(S.projectFor(pr.root), { refs: b.ids || [], all: !!b.all, branch: b.branch });
+  }],
+  ['PUT', /^\/api\/sessions\/([^/]+)$/, (q, b, id) => S.renameSession(id, b.title)],
   ['GET', /^\/api\/sessions\/([^/]+)\/impact$/, (q, b, id) => S.sessionImpact(id)],
   ['PUT', /^\/api\/sessions\/([^/]+)\/capture$/, (q, b, id) => { S.setCapture(id, b.state); return { ok: true }; }],
   ['GET', /^\/api\/sessions\/([^/]+)$/, (q, b, id) => S.sessionDetail(id) || notFound()],

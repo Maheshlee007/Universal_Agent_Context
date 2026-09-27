@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { all, get, run, tx, uid, now, J, P, hasFts, open } from './db.mjs';
-import { gitInfo, git, defaultBranch, redact, clip, ignored } from './util.mjs';
+import { gitInfo, git, gitRaw, defaultBranch, redact, clip, ignored } from './util.mjs';
 
 export const TYPES = ['fact', 'decision', 'constraint', 'lesson', 'requirement', 'preference', 'warning', 'idea', 'task', 'architecture'];
 export const MODES = ['off', 'manual', 'automatic'];
@@ -93,7 +93,10 @@ export function setCapture(sid, state) {
   if (!['on', 'paused', 'off', 'ask'].includes(state)) throw new Error(`bad capture state: ${state}`);
   run(`UPDATE sessions SET capture = ?, status = CASE WHEN status = 'ended' THEN status WHEN ? = 'paused' THEN 'paused' ELSE 'active' END WHERE id = ?`, state, state, sid);
   // prompts typed while capture was 'ask' are held as 'pending': kept on opt-in, deleted on opt-out
-  if (state === 'on') run(`UPDATE events SET kind = 'prompt' WHERE session_id = ? AND kind = 'pending'`, sid);
+  if (state === 'on') {
+    run(`UPDATE events SET kind = 'prompt' WHERE session_id = ? AND kind = 'pending'`, sid);
+    run(`UPDATE sessions SET title = COALESCE(title, (SELECT substr(body, 1, 60) FROM events WHERE session_id = ? AND kind = 'prompt' ORDER BY id LIMIT 1)) WHERE id = ?`, sid, sid);
+  }
   if (state === 'off') run(`DELETE FROM events WHERE session_id = ? AND kind = 'pending'`, sid);
 }
 
@@ -126,19 +129,27 @@ export function card(sessionId) {
 }
 
 // Numbered newest-first list, the same numbering in CLI, dashboard, extension and `#uac continue <n>`.
-export function listSessions(projectId, { limit = 50, active } = {}) {
+// Rolled-up sessions are hidden (and unnumbered) unless `all`.
+export function listSessions(projectId, { limit = 50, active, all: withRolled } = {}) {
   const next = new Set(nextSessions(projectId));
+  let visible = 0;
   return all(`SELECT s.*, (SELECT COUNT(*) FROM events e WHERE e.session_id = s.id AND e.kind != 'pending') AS events,
       (SELECT COUNT(*) FROM events e WHERE e.session_id = s.id AND e.id > s.saved_event_id AND e.kind != 'pending') AS unsaved,
       (SELECT COUNT(*) FROM memories m WHERE m.source_session = s.id) AS memories_created
-    FROM sessions s WHERE s.project_id = ? ${active ? "AND s.status != 'ended'" : ''} ORDER BY s.started_at DESC, s.rowid DESC LIMIT ?`, projectId, limit)
-    .map((s, i) => ({ id: s.id, n: i + 1, agent: s.agent, model: s.model, branch: s.branch, capture: s.capture, status: s.status,
-      started_at: s.started_at, ended_at: s.ended_at, title: s.title, events: s.events, unsaved: s.unsaved,
-      memories_created: s.memories_created, card: card(s.id), next: next.has(s.id) }));
+    FROM sessions s WHERE s.project_id = ? ${active ? "AND s.status != 'ended'" : ''} ${withRolled ? '' : 'AND s.rolled_into IS NULL'}
+    ORDER BY s.started_at DESC, s.rowid DESC LIMIT ?`, projectId, limit)
+    .map((s) => {
+      const c = card(s.id);
+      // rolled-up sessions get no number, so #n is the same with or without --all
+      return { id: s.id, n: s.rolled_into ? null : ++visible, agent: s.agent, model: s.model, branch: s.branch, capture: s.capture, status: s.status,
+        started_at: s.started_at, ended_at: s.ended_at, title: s.title || c?.title || null, events: s.events, unsaved: s.unsaved,
+        memories_created: s.memories_created, card: c, next: next.has(s.id), rolled_into: s.rolled_into ?? null,
+        empty: !s.events && !c && !s.memories_created };
+    });
 }
-// Accepts ids or 1-based numbers from listSessions.
+// Accepts ids or 1-based numbers from listSessions (numbers count visible, non-rolled-up sessions).
 export function resolveSessionRefs(projectId, refs) {
-  const list = all('SELECT id FROM sessions WHERE project_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 200', projectId).map((r) => r.id);
+  const list = all('SELECT id FROM sessions WHERE project_id = ? AND rolled_into IS NULL ORDER BY started_at DESC, rowid DESC LIMIT 200', projectId).map((r) => r.id);
   return refs.map((r) => (/^\d+$/.test(String(r)) && !session(String(r)) ? list[Number(r) - 1] : String(r))).filter((id) => id && session(id));
 }
 
@@ -153,6 +164,13 @@ export function sessionDetail(id) {
     checkpoints: all('SELECT * FROM checkpoints WHERE session_id = ? ORDER BY ts DESC', id).map((c) => J2(c, 'files', 'next_steps')),
     memories: all('SELECT * FROM memories WHERE source_session = ? ORDER BY created_at', id).map(hydrate),
   };
+}
+
+export function renameSession(id, title) {
+  if (!session(id)) throw new Error(`no session ${id}`);
+  if (!title?.trim()) throw new Error('empty title');
+  run('UPDATE sessions SET title = ? WHERE id = ?', clip(title.trim(), 120), id);
+  return session(id);
 }
 
 export function sessionImpact(id) {
@@ -403,9 +421,19 @@ export function freshness(p, mems) {
         // content comparison: authoritative, also catches uncommitted edits
         if (files.some((f) => m.hashes[f] !== undefined && hashFile(p.root, f) !== m.hashes[f])) state = 'changed';
         else since = 0;
-      } else if (base) { // legacy memories without hashes: fall back to commit history
-        if (idx === -1) { if (commits.length) state = 'unknown'; }
-        else if (since > 0) state = 'changed';
+      } else {
+        // legacy memory (no hashes): baseline = the file as first committed after the memory was written
+        // (memories are written at session end, before the work is committed), else today's file. Persisted once.
+        // ponytail: heuristic for pre-v0.3.1 rows only; new rows hash at write/verify time.
+        const hashes = {};
+        for (const f of files) {
+          const c = git(p.root, 'log', '--reverse', '--format=%H', `--after=${m.updated_at || m.created_at}`, '--', f).split(/\r?\n/)[0];
+          const content = c ? gitRaw(p.root, 'show', `${c}:${f}`) : null;
+          hashes[f] = content != null ? crypto.createHash('sha1').update(content.replace(/\r\n/g, '\n')).digest('hex').slice(0, 12) : hashFile(p.root, f);
+        }
+        run('UPDATE memories SET hashes = ? WHERE id = ?', J(hashes), m.id);
+        m.hashes = hashes;
+        if (files.some((f) => hashes[f] !== hashFile(p.root, f))) state = 'changed'; else since = 0;
       }
     }
     m.freshness = { state, commits_since: since };
@@ -469,9 +497,12 @@ export function maintain(p) {
       else if (!existing.has(branch)) run(`UPDATE memories SET status = 'archived', invalid_at = ? WHERE project_id = ? AND scope = 'branch' AND branch = ?`, now(), p.id, branch);
     }
   }
-  const mems = all(`SELECT * FROM memories WHERE project_id = ? AND status = 'active'`, p.id).map(hydrate);
-  for (const m of freshness(p, mems))
-    if (m.freshness.state === 'changed' || m.freshness.state === 'missing') run(`UPDATE memories SET status = 'stale', updated_at = ? WHERE id = ?`, now(), m.id);
+  const mems = all(`SELECT * FROM memories WHERE project_id = ? AND status IN ('active','stale')`, p.id).map(hydrate);
+  for (const m of freshness(p, mems)) {
+    const bad = m.freshness.state === 'changed' || m.freshness.state === 'missing';
+    if (bad && m.status === 'active') run(`UPDATE memories SET status = 'stale', updated_at = ? WHERE id = ?`, now(), m.id);
+    if (!bad && m.status === 'stale') run(`UPDATE memories SET status = 'active' WHERE id = ?`, m.id); // code matches again
+  }
 }
 
 // ---------- export .context/PROJECT.md (one-way, atomic) ----------
