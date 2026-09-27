@@ -255,6 +255,28 @@ test('resume of a long session shows the token-cost tip', () => {
   cli('rm', 'sess-long', '--yes');
 });
 
+test('continuing the SAME session: resume reactivates it, reports unsaved work, next save gets previous_card to update one card', async () => {
+  hook('SessionStart', { session_id: 'sess-cont', source: 'startup' });
+  hook('UserPromptSubmit', { session_id: 'sess-cont', prompt: 'Build CSV export' });
+  await callTool('uac_save', { session_id: 'sess-cont', upto_event_id: 1e9, summary: { title: 'Build CSV export (part 1)' }, checkpoint: { goal: 'csv', next_steps: ['add headers'], note: 'n' }, candidates: [] });
+  hook('SessionEnd', { session_id: 'sess-cont', reason: 'prompt_input_exit' });
+  assert.equal(S.session('sess-cont').status, 'ended');
+  const c = ctxOf(hook('SessionStart', { session_id: 'sess-cont', source: 'resume' }));
+  assert.equal(S.session('sess-cont').status, 'active', 'resumed session is live again');
+  assert.match(c, /saved before \("Build CSV export \(part 1\)"\)[\s\S]*UPDATES that same card/);
+  hook('UserPromptSubmit', { session_id: 'sess-cont', prompt: 'now add headers' });
+  hook('PostToolUse', { session_id: 'sess-cont', tool_name: 'Edit', tool_input: { file_path: 'src/csv.js' }, tool_response: 'ok' });
+  hook('PostToolUse', { session_id: 'sess-cont', tool_name: 'Edit', tool_input: { file_path: 'src/csv2.js' }, tool_response: 'ok' });
+  const c2 = ctxOf(hook('SessionStart', { session_id: 'sess-cont', source: 'resume' }));
+  assert.match(c2, /3 unsaved event\(s\) since/);
+  const dg = await callTool('uac_digest', { session_id: 'sess-cont' });
+  assert.equal(dg.previous_card.title, 'Build CSV export (part 1)');
+  assert.match(dg.instructions, /ONE updated card for the whole session/);
+  await callTool('uac_save', { session_id: 'sess-cont', upto_event_id: dg.upto_event_id, summary: { title: 'Build CSV export with headers' }, checkpoint: { goal: 'csv', note: 'done' }, candidates: [] });
+  assert.equal(S.card('sess-cont').title, 'Build CSV export with headers');
+  assert.equal(S.listSessions(pid()).filter((x) => x.id === 'sess-cont').length, 1, 'still one session');
+});
+
 test('SessionEnd without a save builds an auto card; nothing is lost', () => {
   hook('SessionStart', { session_id: 'sess-7', source: 'startup' });
   hook('UserPromptSubmit', { session_id: 'sess-7', prompt: 'Fix the login redirect bug' });

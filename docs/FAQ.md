@@ -243,3 +243,18 @@ Every memory and card stores the model that wrote it. The start context shows "(
 
 ### Does it work in Cursor and Copilot?
 Yes, with one limit. Their prompt hooks **cannot add text** to the chat. So the start context comes from their start hook, and `#uac …` controls are applied silently (no reply is shown).
+
+## Continuing in the SAME session
+
+**I saved (a card was made), then kept working in the same session. Is the new work added to the same session?**
+Yes. It's the same session, and new work is recorded there.
+- On the next save, the compressor gets the existing card (`previous_card`) and writes ONE updated card for the whole session: the old parts that are still true plus the new work.
+- There is no second card and no new session.
+- Older checkpoints of that session are marked superseded.
+
+**I didn't save, closed it, and came back much later with `claude --resume`. What happens?**
+- The session is marked active again.
+- Its recorded events are still there. The auto card made when it closed shows up as "auto card".
+- At the start UAC tells you: "This session has N unsaved events since <time>. #uac save writes/updates its card."
+- New work keeps being added to the same session. In automatic mode it's saved by itself once enough work has piled up; in manual mode, type `#uac save`.
+- Resuming re-sends the whole old conversation to the model, which is expensive. For a cheaper start, open a new session and type `#uac continue <n>`: it loads the ~2K-token card.

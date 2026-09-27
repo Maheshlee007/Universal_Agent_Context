@@ -197,6 +197,13 @@ export function startContext(s, p, { source } = {}) {
     L.push(`Session #${pendingSave[0].n} ended without a full save (auto card made). When convenient (not before answering the user), spawn the uac-compressor subagent with "session_id=${pendingSave[0].id}" to refine it.`);
   else if (pendingSave.length)
     L.push(`Unsaved previous session(s): ${pendingSave.map((x) => `#${x.n} "${clip(x.card.title, 50)}"`).join(', ')} (auto card only). Tell the user once: "#uac save <n>" lets you write a full card; the dashboard can delete them instead.`);
+  // resumed sessions: say what UAC holds for THIS session (saved card? unsaved work since when?)
+  if (source === 'resume') {
+    const mine = S.card(s.id), unsavedMine = S.unsavedCount(s);
+    const since = unsavedMine ? get(`SELECT MIN(ts) AS t FROM events WHERE session_id = ? AND id > ? AND kind != 'pending'`, s.id, s.saved_event_id).t : null;
+    if (mine && mine.quality !== 'auto') L.push(`This session was saved before ("${clip(mine.title, 60)}"). New work is recorded in the same session; the next save UPDATES that same card (it covers the whole session).`);
+    if (unsavedMine) L.push(`This session has ${unsavedMine} unsaved event(s) since ${ago(since)}${mine?.quality === 'auto' ? ' (only an auto card so far)' : ''}. "#uac save" writes/updates its card.`);
+  }
   // resumed sessions: the host re-sends the whole old conversation; a new session + card is far cheaper
   if (source === 'resume' && s.transcript_path) {
     let bytes = 0;
@@ -210,7 +217,9 @@ export function startContext(s, p, { source } = {}) {
   if (!p.mode) L.push(`UAC first run in this project. Ask the user ONCE (AskUserQuestion if available): should UAC be "automatic" (load context + record + auto-save), "manual" (load context, record only after #uac on) or "off"? Then call uac_capture {session_id: "${s.id}", mode, state: "on" for automatic else "off"}. Until then nothing is recorded.`);
   else if (p.mode === 'manual' && S.session(s.id).capture !== 'on') L.push('Recording is off (manual mode). The user can type "#uac on".');
   L.push(`Controls (typed by the user anywhere in a message): #uac on | off | save | fresh | continue <n> | deep | msg <text>. Save = spawn uac-compressor (session_id=${s.id}).`);
-  return clip(`${text}\n${L.join('\n')}`, START_MAX);
+  // the instructions/notes must survive the 10K cap; trim the knowledge pack instead
+  const tail = L.join('\n');
+  return `${clip(text, Math.max(1000, START_MAX - tail.length - 1))}\n${tail}`;
 }
 
 export function why(projectId, id) {
@@ -256,8 +265,12 @@ export function digest(s, maxChars = 60000) {
     .slice(0, 20).map(({ id, type, title, body, anchors, files }) => ({ id, type, title, body, anchors, files }));
   const existing = all(`SELECT id, type, title FROM memories WHERE (project_id = ? OR project_id IS NULL) AND status IN ('active','proposed','stale')
       ORDER BY pinned DESC, importance DESC, updated_at DESC LIMIT 80`, s.project_id);
-  return { session_id: s.id, branch: s.branch, goal: clip(goal, 500), upto_event_id: evs.at(-1)?.id ?? s.saved_event_id,
-    events: text, diff_stat: d.stat, recheck, existing };
+  // saved before and continued (same session): the new card must cover the WHOLE session, so hand over the current card
+  const prevCard = S.card(s.id);
+  const previous_card = prevCard && prevCard.quality !== 'auto' ? { title: prevCard.title, body: prevCard.body, working: prevCard.working, broken: prevCard.broken, next_steps: prevCard.next_steps, files: prevCard.files, note: prevCard.note } : null;
+  return { session_id: s.id, branch: s.branch, goal: clip(goal || prevCard?.goal || s.title || '', 500), upto_event_id: evs.at(-1)?.id ?? s.saved_event_id,
+    events: text, diff_stat: d.stat, recheck, existing, previous_card,
+    instructions: previous_card ? 'This session was saved before and then continued. Write the summary and checkpoint as ONE updated card for the whole session: keep what still holds from previous_card, add the new work, drop what is done or no longer true.' : undefined };
 }
 
 export function addCheckpoint(s, c, trigger = 'manual') {
@@ -269,7 +282,9 @@ export function addCheckpoint(s, c, trigger = 'manual') {
 
 export function save(s, p, { upto_event_id, summary, checkpoint, candidates = [], model }) {
   const res = { summary: null, checkpoint: null, added: 0, updated: 0, verified: 0, conflicts: 0, pending_review: 0, skipped: 0, events_removed: 0, errors: [] };
-  const upto = upto_event_id ?? get('SELECT MAX(id) AS m FROM events WHERE session_id = ?', s.id).m ?? s.saved_event_id;
+  // never mark beyond the last real event: a wrong/huge upto_event_id would hide all future work as "saved"
+  const lastId = get('SELECT MAX(id) AS m FROM events WHERE session_id = ?', s.id).m ?? s.saved_event_id;
+  const upto = Math.min(Number(upto_event_id ?? lastId), lastId);
   const raw = get(`SELECT COALESCE(SUM(LENGTH(COALESCE(body,'')) + LENGTH(COALESCE(target,''))), 0) AS n FROM events WHERE session_id = ? AND id > ? AND id <= ?`,
     s.id, s.saved_event_id, upto).n;
   // an LLM save replaces this session's auto card

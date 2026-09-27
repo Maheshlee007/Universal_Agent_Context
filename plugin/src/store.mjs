@@ -74,6 +74,8 @@ export function ensureSession({ host, session_id, cwd, transcript_path, model })
   const existing = session(session_id);
   if (existing) {
     if (model && existing.model !== model) run('UPDATE sessions SET model = ? WHERE id = ?', model, session_id);
+    // resumed after it ended (e.g. `claude --resume` days later): it is live again
+    if (existing.status === 'ended') run(`UPDATE sessions SET status = CASE WHEN capture = 'paused' THEN 'paused' ELSE 'active' END, ended_at = NULL WHERE id = ?`, session_id);
     return { s: session(session_id), created: false };
   }
   const p = projectFor(cwd);

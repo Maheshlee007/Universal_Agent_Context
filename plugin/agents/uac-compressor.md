@@ -11,7 +11,9 @@ You call the uac MCP tools. In Claude Code they show up as `mcp__uac__<name>` or
 ## Steps
 
 1. Call `uac_digest({session_id})` with the session id you were given (omit it if you weren't given one).
-   - The result is `{session_id, goal, upto_event_id, events, existing, diff_stat, recheck}`.
+   - The result is `{session_id, goal, upto_event_id, events, existing, diff_stat, recheck, previous_card}`.
+   - **`previous_card` present** means this session was saved before and then continued (same session, resumed later). Your summary and checkpoint REPLACE that card, so they must cover the WHOLE session: keep what still holds from `previous_card`, add the new work from `events`, and drop next steps that are now done. Never write a card that covers only the new events.
+   - `events` can contain `PREVIOUS SESSION CARD` blocks (from a merge or a rollup). Combine all of them and the new events into ONE card.
    - If `events` is empty, `diff_stat` is empty and `recheck` is empty, return `UAC saved: nothing new` and stop.
 2. Work out from `events` (already filtered and redacted) and `diff_stat`:
    - what the session was trying to do
