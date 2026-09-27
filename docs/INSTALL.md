@@ -35,7 +35,7 @@ It detects Claude Code, Gemini CLI, Codex, Copilot CLI (CLI on PATH), Cursor (`c
 
 | Host | What it writes | Undo |
 |---|---|---|
-| Claude Code | Runs `claude plugin marketplace add <repo>` + `claude plugin install universal-agent-context@uac` | `claude plugin uninstall universal-agent-context@uac`, `claude plugin marketplace remove uac` |
+| Claude Code | Runs `claude plugin marketplace add <repo>/plugin` + `claude plugin install universal-agent-context@uac` | `claude plugin uninstall universal-agent-context@uac`, `claude plugin marketplace remove uac` |
 | Gemini CLI | `~/.gemini/settings.json`: `hooks.*` entries + `mcpServers.uac` | Delete hook entries whose command contains `uac.mjs" hook` and `mcpServers.uac` |
 | Codex | `~/.codex/hooks.json` (hooks), `~/.codex/config.toml` (`[mcp_servers.uac]`) | Delete the UAC hook entries and the `[mcp_servers.uac]` table |
 | Cursor | `~/.cursor/hooks.json` (hooks), `~/.cursor/mcp.json` (`mcpServers.uac`) | Delete the UAC hook entries and `mcpServers.uac` |
@@ -47,7 +47,7 @@ It detects Claude Code, Gemini CLI, Codex, Copilot CLI (CLI on PATH), Cursor (`c
 
 ## 4. Claude Code
 
-`uac install claude` registers the repo as a local marketplace named `uac` (its `.claude-plugin/marketplace.json` points at `./plugin`) and installs the plugin from it. Claude copies only `plugin/` into its plugin cache. You get hooks, the MCP server, skills, the `uac-compressor` subagent and the command.
+`uac install claude` registers the `plugin/` folder as a local marketplace named `uac` (`plugin/.claude-plugin/marketplace.json`) and installs the plugin from it. Claude copies only `plugin/` into its plugin cache (about 260 KB). There are two alternatives that give the same result: register the repo root (`claude plugin marketplace add <repo>`; the root marketplace points at `./plugin`), or register GitHub (`claude plugin marketplace add Maheshlee007/Universal_Agent_Context`). You get hooks, the MCP server, skills, the `uac-compressor` subagent and the command.
 
 - **Command:** plugin commands are namespaced: `/universal-agent-context:uac <arg>` (e.g. `/universal-agent-context:uac save`).
 - **Inline (recommended):** type `#uac on`, `#uac save`, `#uac continue 2`… anywhere in a prompt. The hook handles it without the model.
@@ -68,7 +68,7 @@ node scripts/bundle-cli.mjs
 npx @vscode/vsce package --allow-missing-repository --skip-license
 code --install-extension universal-agent-context-<version>.vsix
 ```
-`bundle-cli.mjs` copies `plugin/{bin,src,viewer}` into the extension, so it carries its own CLI. It still needs Node ≥ 22.13 on PATH (or set `uac.nodePath`; `uac.cliPath` points it at another CLI).
+`bundle-cli.mjs` copies the whole `plugin/` (CLI, hooks, skills, agents, manifests) into the extension, so it carries its own CLI, and "UAC: Install for detected tools" works from the extension alone. After an extension update, it re-runs the install automatically so hook paths follow the new version folder. It still needs Node ≥ 22.13 on PATH (or set `uac.nodePath`; `uac.cliPath` points it at another CLI).
 
 What you get:
 - **Status bar:** recording state; click to toggle.

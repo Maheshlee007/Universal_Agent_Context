@@ -208,6 +208,7 @@ export async function main(argv) {
     case 'doctor': {
       const p = proj();
       open();
+      (await import('./db.mjs')).checkpointWal();
       const db = path.join(home(), 'uac.db');
       const size = (f) => { try { return fs.statSync(f).size; } catch { return 0; } };
       const errLog = path.join(home(), 'hook-errors.log');
