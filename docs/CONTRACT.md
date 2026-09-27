@@ -119,3 +119,62 @@ CLI:
 - `uac pack --ids a,b [--name N] [--next]` → creates a pack
 - `uac next --pack P | --clear` → `{pack}`
 - `uac session <id>` → same shape as GET `/api/sessions/:id`
+
+---
+# v0.3 contract (supersedes the conflicting parts above). Code now lives in plugin/ (plugin/bin, plugin/src, plugin/viewer)
+
+## Model
+- **Users pick SESSIONS, not memories or packs.** A session "card" is that session's latest summary plus its latest checkpoint.
+- **Project knowledge** (memories) is always loaded in compact form and is never ticked by users. They can pin, mute, verify, edit or delete it.
+- A successful LLM save deletes the session's raw events; the card replaces them.
+- A deterministic "auto card" (quality='auto') is built without an LLM for sessions that ended unsaved. Their events are kept until an LLM save refines the card.
+- **Modes per project:** `off` | `manual` (loads context, records only after `#uac on`) | `automatic` (loads + records). A null mode means first run: ask once.
+
+## Viewer API changes / additions
+| Method + path | Body | Returns |
+|---|---|---|
+| GET `/api/projects` | | `[{id,root,name,mode,git_remote,sessions,memories}]` |
+| POST `/api/projects/merge` | `{from, into}` | `{ok}`. Moves everything from `from` into `into`, then deletes `from` |
+| DELETE `/api/projects/:id` | | `{ok}`. Cascades everything |
+| GET `/api/sessions?project=ID` | | `[{id, n, agent, model, branch, capture, status, started_at, ended_at, title, events, unsaved, card:{summary_id,title,body,quality,working,broken,next_steps,files,note}\|null, memories_created, next:bool}]`. `n` = 1-based index, newest first (same numbering as the CLI) |
+| GET `/api/sessions/:id/impact` | | `{events, summaries, checkpoints, memories, retrievals}`: what a delete removes |
+| DELETE `/api/sessions/:id` | | `{ok, deleted:{...counts}}`. **Cascade:** events, summaries, checkpoints, retrievals, and memories whose source_session is this session |
+| POST `/api/sessions/cleanup?project=ID` | `{empty:true}` | `{deleted:n}`. Removes sessions with 0 events and no card |
+| GET `/api/next?project=ID` | | `{sessions:[ids]}` |
+| PUT `/api/next?project=ID` | `{sessions:[ids]}` (empty = default: latest card on the same branch) | `{sessions}`. One-shot, consumed by the next session start |
+| GET `/api/memories?project=ID&status=&type=&q=&auto=1` | | `[memory]`. `auto=1` = accepted automatically in the last 7 days (for the "Recently auto-accepted" list) |
+| PUT `/api/memories/:id` | adds `muted` (bool), `pinned` (bool) | memory |
+| POST `/api/memories/:id/verify` | | memory (last_verified_at=now, verified_commit=HEAD) |
+| POST `/api/memories/:id/resolve` | `{action, body?}` | memory. Server records resolved_by='user-dashboard' |
+| GET `/api/messages?project=ID` | | `[{id, from_session, from_agent, from_branch, to, text, created_at, reads}]` |
+| POST `/api/messages?project=ID` | `{text, to:'all'\|'branch:<name>'\|'session:<id>'}` | message |
+
+**memory** gains: `anchors:[{file,symbol,line}]`, `muted`, `source_model`, `resolved_by`, `resolved_at`, `last_verified_at`, `verified_commit`, `freshness:{state:'verified'\|'changed'\|'missing'\|'unknown', commits_since:number}`.
+
+Packs, retrievals and `/api/next` with a pack are kept for power users, but aren't in the main UI.
+
+## CLI (numbered, no ids needed)
+- `uac sessions`: numbered 1..n, newest first.
+- `uac next 2 3` or `uac next --clear`
+- `uac rm 4 5`, `uac rm --empty`, `uac rm <id>`
+- `uac review`: interactive in a terminal: y accept / n reject / e edit in $EDITOR / s skip. Non-interactive with --json.
+- `uac import [n|id]`: rebuild events from the host transcript of a session that wasn't captured.
+- `uac msg "text" [--to all|branch:<b>|session:<id>]`, `uac msgs`
+- `uac projects` / `uac projects merge <from> <into>` / `uac projects rm <id>`
+- `uac backup`, `uac doctor` (path, sizes, integrity, fts5, wal)
+- `uac install` with no host: detect and install for every host found. `uac install <host>` still works.
+- `uac mode off|manual|automatic`
+
+## Inline controls (UserPromptSubmit, every host, no LLM involved)
+`#uac on | off | pause | resume | save | stop | fresh | continue <n…> | import | msg <text>`
+- `fresh`: reload with project knowledge only.
+- `continue 2 3`: load session cards 2 and 3.
+
+## MCP changes
+- **`uac_bootstrap`** `{session_id?, sessions?:[ids or numbers], packs?:[ids], goal?, depth?:'normal'|'deep'}`. Plural lists are merged. The old `tier` and `pack` fields are still accepted.
+- **`uac_verify`** `{ids:[]}`: "still true", bumps last_verified_at without writing a version.
+- **`uac_message`** `{session_id?, text, to?}` and **`uac_messages`** `{session_id?}`.
+- **`uac_save`** adds `model` (the compressor's model id).
+  - Candidates gain `anchors:[{file,symbol,line}]`, plus `op:'verify'` (with `id`) to confirm an existing memory.
+- **`uac_digest`** adds `diff_stat` (git diff --stat since start_commit, including uncommitted changes) and `recheck:[{id,type,title,body,anchors}]`: stale memories whose files this session changed. The compressor must verify, update or invalidate each one.
+- **`uac_handoff`** `{session_id?}` marks this session as the next session's context. Returns what to type in the other session (`#uac continue <n>`).

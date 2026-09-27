@@ -31,12 +31,13 @@ The default answer is "not yet". The burden of proof is on building. You use the
      body: "Context: ...\nDecision: <verdict>\nConsequences: ...\nMinimal alternative in use: ...",
      why: <the deciding argument>,
      files: [<affected paths>],
+     anchors: [{file, symbol, line}],   // the code the verdict is about, identifiers verbatim
      confidence: 0.8,
      review_when: "<trigger condition>"
    })
    ```
    Every verdict gets `review_when`. For "Build now", use the condition under which to reconsider or remove it.
-6. **Report** the decision id. Bootstrap re-surfaces it once the trigger is met.
+6. **Report** the decision id. The injected start context re-surfaces it once the trigger is met.
 
 ## Rules
 

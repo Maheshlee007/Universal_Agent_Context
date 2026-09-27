@@ -61,7 +61,7 @@ export function install({ root, uacCmd, dryRun }) {
   const file = editJson(path.join(home(), '.gemini', 'settings.json'), (cfg) => {
     cfg.hooks ||= {};
     for (const ev of Object.keys(events)) mergeNested(cfg.hooks, ev, hookCmd({ root, uacCmd }, 'gemini', ev));
-    cfg.mcpServers = { ...cfg.mcpServers, uac: mcpServer({ root }) };
+    cfg.mcpServers = { ...cfg.mcpServers, uac: mcpServer({ root, uacCmd }) };
   }, dryRun);
   return { files: [file] };
 }

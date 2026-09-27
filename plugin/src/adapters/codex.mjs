@@ -63,7 +63,7 @@ export function install({ root, uacCmd, dryRun }) {
     for (const ev of Object.keys(events)) mergeNested(cfg.hooks, ev, hookCmd({ root, uacCmd }, 'codex', ev));
   }, dryRun);
 
-  const { command, args } = mcpServer({ root });
+  const { command, args } = mcpServer({ root, uacCmd });
   // JSON string escaping is valid TOML basic-string escaping.
   const block = `[mcp_servers.uac]\ncommand = ${JSON.stringify(command)}\nargs = ${JSON.stringify(args).replace(/,/g, ', ')}\n`;
   const toml = editText(path.join(dir, 'config.toml'), (before) => {

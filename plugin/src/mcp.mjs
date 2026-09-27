@@ -4,35 +4,44 @@ import readline from 'node:readline';
 import * as S from './store.mjs';
 import * as K from './pack.mjs';
 
-const VERSION = '0.1.0';
+const VERSION = '0.3.0';
 const str = { type: 'string' }, num = { type: 'number' }, arr = { type: 'array', items: { type: 'string' } };
-const sid = { session_id: { type: 'string', description: 'UAC session id from the SessionStart menu. Omit to use the latest active session of this project.' } };
+const sid = { session_id: { type: 'string', description: 'UAC session id (shown in the UAC start context). Omit to use the latest active session of this project.' } };
 const obj = (properties, required = []) => ({ type: 'object', properties, required });
+const anchorsSchema = { type: 'array', description: 'Code anchors: exact symbol names as written in the code (greppable), file path, optional line',
+  items: { type: 'object', properties: { file: str, symbol: str, line: num }, required: ['file'] } };
 
 const TOOLS = [
-  ['uac_bootstrap', 'Load a ranked, token-budgeted context pack for this project: last checkpoint, must-not-violate requirements, decisions, architecture, lessons, open tasks, recent sessions. Call once at session start after asking the user which tier.',
-    obj({ ...sid, tier: { type: 'string', enum: Object.keys(K.TIERS), description: 'minimal ~1k, relevant ~4k, deep ~10k, fork = project knowledge only (no session state), none' }, budget_tokens: num, goal: { type: 'string', description: "The user's task, used for ranking" }, pack: { type: 'string', description: 'Pack id (p-xxxxxx) to load' } })],
-  ['uac_capture', 'Set whether this session is recorded (on/paused/off), and optionally the project mode (manual/automatic).',
-    obj({ ...sid, state: { type: 'string', enum: ['on', 'paused', 'off'] }, mode: { type: 'string', enum: ['manual', 'automatic'] } }, ['state'])],
+  ['uac_bootstrap', 'Load project knowledge plus chosen session cards (merged, ranked, deduplicated). The hook already injects this at session start; call it only to load MORE or DIFFERENT context: other sessions, depth deep, or fresh (knowledge only).',
+    obj({ ...sid, sessions: { type: 'array', items: str, description: 'Session ids or numbers (#n from the UAC session list) to continue from' }, packs: arr,
+      goal: { type: 'string', description: "The user's task, used for ranking" }, depth: { type: 'string', enum: ['normal', 'deep'] }, fresh: { type: 'boolean', description: 'Project knowledge only, no session state' } })],
+  ['uac_capture', 'Turn recording of this session on/paused/off, and optionally set the project mode: off (UAC does nothing), manual (loads context, records only when asked), automatic (loads, records, auto-saves).',
+    obj({ ...sid, state: { type: 'string', enum: ['on', 'paused', 'off'] }, mode: { type: 'string', enum: ['off', 'manual', 'automatic'] } }, ['state'])],
   ['uac_checkpoint', 'Write a resumable checkpoint of the current work: goal, what works, what is broken, files, next steps, and a note for the next developer.',
     obj({ ...sid, goal: str, working: str, broken: str, files: arr, next_steps: arr, note: { type: 'string', description: "What I'd tell the next dev" } }, ['goal', 'note'])],
   ['uac_search', 'Search project memory (BM25 + trigram). Returns a compact index "id · type · status · title". Use uac_get for full content. Empty query lists the most recent.',
     obj({ query: str, type: { type: 'string', enum: S.TYPES }, status: { type: 'string', enum: ['proposed', 'active', 'stale', 'conflict', 'superseded', 'archived'] }, limit: num }, ['query'])],
   ['uac_get', 'Get full content of memories (m-), summaries (s-), checkpoints (c-) or packs (p-) by id.', obj({ ids: arr }, ['ids'])],
-  ['uac_timeline', 'Sessions around a session, with their summaries and checkpoints (what happened before/after).', obj({ ...sid, before: num, after: num })],
+  ['uac_timeline', 'Sessions around a session, with their cards (what happened before/after).', obj({ ...sid, before: num, after: num })],
   ['uac_why', 'Explain why an item was included in the last context pack.', obj({ id: str }, ['id'])],
-  ['uac_propose', 'Propose a durable memory. Types: decision (with why), constraint, lesson, requirement, architecture, fact, preference, warning, task, idea (ideas are never facts). Do not store tool noise or secrets. In manual mode it waits for user review.',
-    obj({ ...sid, type: { type: 'string', enum: S.TYPES }, title: str, body: str, why: str, files: arr, confidence: num, scope: { type: 'string', enum: ['user', 'project', 'branch'] }, review_when: { type: 'string', description: 'For deferred/YAGNI decisions: the condition that should trigger a revisit' } }, ['type', 'title', 'body'])],
-  ['uac_update', 'Change an existing memory because the facts changed. Needs a reason. Manual mode creates a superseding proposal; automatic mode applies it with a version.',
-    obj({ id: str, body: str, title: str, reason: str, evidence: str }, ['id', 'body', 'reason'])],
+  ['uac_verify', 'Mark memories as still true after you checked them against the code (bumps verification, clears stale; no new version).', obj({ ...sid, ids: arr }, ['ids'])],
+  ['uac_propose', 'Record a durable memory. Types: decision (with why), constraint, lesson, requirement, architecture, fact, preference, warning, task, idea (ideas are never facts). Quote identifiers verbatim and add anchors. Confidence >= 0.7 is accepted automatically; lower waits for the user. No tool noise, no secrets.',
+    obj({ ...sid, type: { type: 'string', enum: S.TYPES }, title: str, body: str, why: str, files: arr, anchors: anchorsSchema, confidence: num,
+      scope: { type: 'string', enum: ['user', 'project', 'branch'] }, review_when: { type: 'string', description: 'For deferred/YAGNI decisions: the condition that should trigger a revisit' } }, ['type', 'title', 'body'])],
+  ['uac_update', 'Change an existing memory because the facts changed. Needs a reason. Applied directly (with a version) when confident, otherwise proposed for review.',
+    obj({ id: str, body: str, title: str, reason: str, evidence: str, anchors: anchorsSchema, confidence: num }, ['id', 'body', 'reason'])],
   ['uac_invalidate', 'Retire a memory that is no longer true (kept in history, not deleted).', obj({ id: str, reason: str, superseded_by: str }, ['id', 'reason'])],
-  ['uac_review', 'List memories awaiting user review (proposed) and conflicts. Walk the user through them, then call uac_resolve.', obj({})],
+  ['uac_review', 'List memories that need a human decision (low-confidence proposals and conflicts). Walk the user through them, then call uac_resolve.', obj({})],
   ['uac_resolve', 'Accept or reject a proposed/conflicting memory after the user decided. Optionally accept with an edited body.', obj({ id: str, action: { type: 'string', enum: ['accept', 'reject'] }, body: str }, ['id', 'action'])],
-  ['uac_pack', 'Create or list named context packs (memory m-, summary s-, checkpoint c- ids) for reuse by other sessions. next=true makes it the context the NEXT session of this project loads.', obj({ action: { type: 'string', enum: ['create', 'list'] }, name: str, ids: arr, goal: str, budget_tokens: num, next: { type: 'boolean' } }, ['action'])],
-  ['uac_handoff', 'Create a pack from this session (checkpoint + top memories) for a parallel or next session. Returns the pack id and how to load it.', obj({ ...sid, name: str })],
-  ['uac_digest', 'For the uac-compressor subagent: the unsaved, redacted, pre-filtered events of a session plus an index of existing memories to reconcile against.', obj({ session_id: str, max_chars: num }, ['session_id'])],
-  ['uac_save', 'For the uac-compressor subagent: save summary, checkpoint and reconciled memory candidates (op add|update|supersede|conflict|noop) for events up to upto_event_id.',
-    obj({ session_id: str, upto_event_id: num, summary: { type: 'object' }, checkpoint: { type: 'object' }, candidates: { type: 'array', items: { type: 'object' } } }, ['session_id', 'upto_event_id'])],
+  ['uac_handoff', 'Continue this work elsewhere: the next UAC session of this project (any agent/branch) continues from this session. Save first so the card is complete.', obj({ ...sid })],
+  ['uac_message', 'Post a note to other sessions of this project, also in other tools (Codex, Gemini...) and on other branches, e.g. "I changed the signature of computeRowPlan". Delivered once at their next prompt.',
+    obj({ ...sid, text: str, to: { type: 'string', description: "'all' (default), 'branch:<name>' or 'session:<id>'" } }, ['text'])],
+  ['uac_messages', 'Read unread messages for this session (marks them read).', obj({ ...sid })],
+  ['uac_pack', 'Advanced: create or list named packs of memory/summary/checkpoint ids.', obj({ action: { type: 'string', enum: ['create', 'list'] }, name: str, ids: arr, goal: str, next: { type: 'boolean' } }, ['action'])],
+  ['uac_digest', 'For the uac-compressor subagent: unsaved redacted events, git diff since the session started (covers subagent edits), memories to re-check because their files changed, and an index of existing memories.',
+    obj({ session_id: str, max_chars: num }, ['session_id'])],
+  ['uac_save', 'For the uac-compressor subagent: save summary, checkpoint and reconciled candidates (op add|update|supersede|conflict|verify|noop, with anchors) for events up to upto_event_id. Replaces the raw events.',
+    obj({ session_id: str, upto_event_id: num, model: { type: 'string', description: 'Your model id' }, summary: { type: 'object' }, checkpoint: { type: 'object' }, candidates: { type: 'array', items: { type: 'object' } } }, ['session_id', 'upto_event_id'])],
 ];
 
 function ctx(args) {
@@ -69,20 +78,30 @@ const handlers = {
   uac_get: (a) => a.ids.map(getById),
   uac_timeline: (a, { s, p }) => K.timeline(p, s, a),
   uac_why: (a, { p }) => K.why(p.id, a.id),
-  uac_propose: (a, { s, p }) => { const m = S.propose(a, { s, p }); return `${m.id} saved as ${m.status} (${m.scope} scope)`; },
+  uac_verify: (a, { p }) => a.ids.map((id) => `${S.verifyMemory(id, p).id} verified`).join('\n'),
+  uac_propose: (a, { s, p }) => {
+    const m = S.propose(a, { s, p });
+    return `${m.id} saved as ${m.status} (${m.scope} scope)${m.status === 'proposed' ? ': waits for user review (confidence < 0.7)' : ''}`;
+  },
   uac_update: (a, { s, p }) => {
-    if (p.mode === 'automatic') return S.updateMemory(a.id, { body: a.body, title: a.title }, { by: 'llm', reason: a.reason });
     const old = S.memory(a.id);
     if (!old) throw new Error(`no memory ${a.id}`);
-    const m = S.propose({ ...old, title: a.title || old.title, body: a.body, why: a.reason, status: 'proposed' }, { s, p });
+    if ((a.confidence ?? 0.8) >= S.AUTO_ACCEPT_CONFIDENCE) {
+      S.updateMemory(a.id, { body: a.body, title: a.title, anchors: a.anchors }, { by: 'llm', reason: a.reason });
+      S.verifyMemory(a.id, p);
+      return `${a.id} updated (previous version kept in history)`;
+    }
+    const m = S.propose({ ...old, title: a.title || old.title, body: a.body, why: a.reason, anchors: a.anchors || old.anchors, confidence: a.confidence, status: 'proposed' }, { s, p });
     S.relate(m.id, a.id, 'supersedes');
     return `${m.id} proposed to supersede ${a.id} (awaiting review)`;
   },
   uac_invalidate: (a) => { S.invalidate(a.id, a.reason, a.superseded_by); return `${a.id} superseded`; },
   uac_review: (a, { p }) => S.review(p.id),
-  uac_resolve: (a, { p }) => { const m = S.resolve(a.id, a.action, a.body); S.exportProjectMd(p); return `${m.id} → ${m.status}`; },
-  uac_pack: (a, { s, p }) => a.action === 'create' ? K.createPack(p, s, a) : K.listPacks(p.id),
-  uac_handoff: (a, { s, p }) => K.handoff(s, p, a.name),
+  uac_resolve: (a, { p }) => { const m = S.resolve(a.id, a.action, a.body, 'user-tool'); S.exportProjectMd(p); return `${m.id} → ${m.status}`; },
+  uac_pack: (a, { s, p }) => (a.action === 'create' ? K.createPack(p, s, a) : K.listPacks(p.id)),
+  uac_handoff: (a, { s, p }) => K.handoff(s, p),
+  uac_message: (a, { s, p }) => S.postMessage(s, p, a.text, a.to || 'all'),
+  uac_messages: (a, { s }) => { const m = S.unreadMessages(s); S.markRead(s, m); return m.length ? m : 'no unread messages'; },
   uac_digest: (a, { s }) => K.digest(s, a.max_chars),
   uac_save: (a, { s, p }) => K.save(s, p, a),
 };
@@ -91,8 +110,8 @@ export async function callTool(name, args = {}) {
   const h = handlers[name];
   if (!h) throw new Error(`unknown tool ${name}`);
   const c = ctx(args);
-  if (!c.s && !['uac_search', 'uac_get', 'uac_why', 'uac_review', 'uac_resolve', 'uac_pack', 'uac_capture'].includes(name))
-    throw new Error('no UAC session for this project yet (hooks not installed?). Run `uac install claude`.');
+  if (!c.s && !['uac_search', 'uac_get', 'uac_why', 'uac_review', 'uac_resolve', 'uac_pack', 'uac_capture', 'uac_verify', 'uac_message'].includes(name))
+    throw new Error('no UAC session for this project yet (hooks not installed?). Run `uac install`.');
   return h(args, c);
 }
 

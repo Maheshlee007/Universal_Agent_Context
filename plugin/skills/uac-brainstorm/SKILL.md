@@ -16,7 +16,8 @@ Ideas are cheap and must stay labelled as ideas. You use the uac MCP tools (shor
    - Include at least one "do nothing" or minimal option.
 3. **Converge lightly.** Rank the top 3 with a sentence each. Don't decide unless the user explicitly does.
 4. **Store.** Ask the user which ideas to keep (AskUserQuestion, multi-select). For each one kept, call:
-   `uac_propose({type:"idea", title, body:<pitch + upside + cost>, why:<what prompted it>, files, confidence})`
+   `uac_propose({type:"idea", title, body:<pitch + upside + cost>, why:<what prompted it>, files, anchors, confidence})`
+   - `anchors:[{file, symbol, line}]`: the existing code each idea would change, identifiers quoted verbatim. Omit for ideas not tied to code.
 5. **Report** the ids stored.
 
 ## Rules

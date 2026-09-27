@@ -1,4 +1,4 @@
-// End-to-end: hooks → capture → compressor save → review → bootstrap → git staleness/promotion → viewer API → MCP stdio.
+// End-to-end (v0.3): hooks → capture → compressor save → knowledge → session cards → branches → messages → deletes → dashboard API → MCP stdio.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -15,7 +15,7 @@ const repo = path.join(tmp, 'repo');
 fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
 const g = (...a) => spawnSync('git', a, { cwd: repo, encoding: 'utf8' });
 g('init', '-q', '-b', 'main'); g('config', 'user.email', 't@t'); g('config', 'user.name', 't');
-fs.writeFileSync(path.join(repo, 'src', 'auth.js'), 'export const auth = 1;\n');
+fs.writeFileSync(path.join(repo, 'src', 'auth.js'), 'export function rotateRefreshToken() {}\nexport const auth = 1;\n');
 g('add', '.'); g('commit', '-qm', 'init');
 
 const hook = (event, input) => {
@@ -23,150 +23,260 @@ const hook = (event, input) => {
   assert.equal(r.stderr, '', `hook stderr: ${r.stderr}`);
   return r.stdout ? JSON.parse(r.stdout) : null;
 };
+const ctxOf = (out) => out?.hookSpecificOutput?.additionalContext || '';
 const cli = (...a) => JSON.parse(spawnSync(process.execPath, [BIN, ...a, '--json', '--cwd', repo], { encoding: 'utf8', env: process.env }).stdout);
 
 const { callTool } = await import('../plugin/src/mcp.mjs');
 const S = await import('../plugin/src/store.mjs');
+const K = await import('../plugin/src/pack.mjs');
 const { redact, ignored } = await import('../plugin/src/util.mjs');
 process.env.UAC_CWD = repo;
+const pid = () => S.projectFor(repo).id;
 
 test('redaction and ignore globs', () => {
   const r = redact('key sk-ant-abcdefghijklmnopqrstuvwxyz123 and postgres://bob:hunter2@db:5432 password=supersecret <private>x</private> mail a@b.com');
   assert.ok(!/abcdefghij|hunter2|supersecret|a@b\.com/.test(r), r);
   assert.match(r, /postgres:\/\/bob:\[REDACTED\]@db/);
-  assert.match(r, /\[PRIVATE\]/);
-  assert.ok(ignored(repo, '.env.local'));
-  assert.ok(ignored(repo, 'config/secrets/x.json'));
-  assert.ok(!ignored(repo, 'src/auth.js'));
+  assert.ok(ignored(repo, '.env.local') && ignored(repo, 'config/secrets/x.json') && !ignored(repo, 'src/auth.js'));
 });
 
-test('session start menu asks for capture + mode, hook stdout is clean JSON', () => {
-  const out = hook('SessionStart', { source: 'startup' });
-  const ctx = out.hookSpecificOutput.additionalContext;
-  assert.match(ctx, /session_id=sess-1/);
-  assert.match(ctx, /Capture this session/);
-  assert.match(ctx, /UAC mode for this project/);
+test('first run: context injected, ONE mode question, nothing recorded until opt-in; near-empty warning', () => {
+  const c = ctxOf(hook('SessionStart', { source: 'startup', model: 'claude-opus-5-5' }));
+  assert.match(c, /UAC first run in this project. Ask the user ONCE/);
+  assert.doesNotMatch(c, /Minimal|Relevant|Deep ~/);
+  assert.match(c, /knows almost nothing about this project/);
+  assert.equal(S.session('sess-1').model, 'claude-opus-5-5');
 });
 
-test('capture is off until the user opts in; inline controls work', () => {
-  hook('UserPromptSubmit', { prompt: 'first task prompt held while asking' });
-  assert.equal(cli('status').counts.active, 0);
-  return callTool('uac_capture', { session_id: 'sess-1', state: 'on', mode: 'automatic' }).then(() => {
-    hook('UserPromptSubmit', { prompt: 'Add refresh token rotation to src/auth.js' });
-    hook('PostToolUse', { tool_name: 'Read', tool_input: { file_path: 'src/auth.js' }, tool_response: 'export const auth = 1;' });
-    hook('PostToolUse', { tool_name: 'Read', tool_input: { file_path: '.env' }, tool_response: 'API_KEY=zzz' });
-    hook('PostToolUseFailure', { tool_name: 'Bash', tool_input: { command: 'npm test' }, error: 'TypeError: x is undefined' });
-    hook('PostToolUse', { tool_name: 'Edit', tool_input: { file_path: 'src/auth.js' }, tool_response: 'ok', agent_id: 'sub-1' }); // subagent internals skipped
-    hook('PostToolUse', { tool_name: 'mcp__uac__uac_search', tool_input: {}, tool_response: 'x' }); // own tools skipped
-    const p = hook('UserPromptSubmit', { prompt: '#uac pause please' });
-    assert.match(p.hookSpecificOutput.additionalContext, /paused/);
-    hook('PostToolUse', { tool_name: 'Read', tool_input: { file_path: 'src/secret-while-paused.js' }, tool_response: 'x' });
-    hook('UserPromptSubmit', { prompt: '#uac resume' });
-    const d = callTool('uac_digest', { session_id: 'sess-1' });
-    return d.then((dg) => {
-      assert.match(dg.events, /USER: Add refresh token rotation/);
-      assert.match(dg.events, /USER: first task prompt held/); // pending prompt promoted on opt-in
-      assert.match(dg.events, /FAILED Bash npm test/);
-      assert.match(dg.events, /\[ignored\]/);
-      assert.doesNotMatch(dg.events, /zzz|secret-while-paused|mcp__uac/);
-      assert.equal(dg.events.match(/tool Edit/g), null);
-    });
-  });
+test('capture: pending prompt promoted on opt-in; subagent/own tools/ignored files handled; inline pause/resume', async () => {
+  hook('UserPromptSubmit', { prompt: 'Add refresh token rotation to src/auth.js' });
+  await callTool('uac_capture', { session_id: 'sess-1', state: 'on', mode: 'automatic' });
+  hook('PostToolUse', { tool_name: 'Read', tool_input: { file_path: 'src/auth.js' }, tool_response: 'x' });
+  hook('PostToolUse', { tool_name: 'Read', tool_input: { file_path: '.env' }, tool_response: 'API_KEY=zzz' });
+  hook('PostToolUseFailure', { tool_name: 'Bash', tool_input: { command: 'npm test' }, error: 'TypeError: x is undefined' });
+  hook('PostToolUse', { tool_name: 'Edit', tool_input: { file_path: 'src/auth.js' }, tool_response: 'ok', agent_id: 'sub-1' });
+  hook('PostToolUse', { tool_name: 'mcp__uac__uac_search', tool_input: {}, tool_response: 'x' });
+  assert.match(ctxOf(hook('UserPromptSubmit', { prompt: '#uac pause please' })), /paused/);
+  hook('PostToolUse', { tool_name: 'Read', tool_input: { file_path: 'src/secret-while-paused.js' }, tool_response: 'x' });
+  hook('UserPromptSubmit', { prompt: '#uac resume' });
+  const dg = await callTool('uac_digest', { session_id: 'sess-1' });
+  assert.match(dg.events, /USER: Add refresh token rotation/);
+  assert.match(dg.events, /FAILED Bash npm test/);
+  assert.match(dg.events, /\[ignored\]/);
+  assert.doesNotMatch(dg.events, /zzz|secret-while-paused|mcp__uac|tool Edit/);
 });
 
-test('automatic mode: Stop blocks once past threshold, never when stop_hook_active', async () => {
+test('automatic: Stop blocks past threshold (never when stop_hook_active); records final assistant message', async () => {
   for (let i = 0; i < 40; i++) S.addEvent(S.session('sess-1'), 'tool', { tool: 'Read', target: `src/f${i}.js` });
   const out = hook('Stop', { last_assistant_message: 'Rotation implemented; 1 test failing.' });
   assert.equal(out.decision, 'block');
-  assert.match((await callTool('uac_digest', { session_id: 'sess-1' })).events, /ASSISTANT: Rotation implemented/);
   assert.match(out.reason, /uac-compressor/);
   assert.equal(hook('Stop', { stop_hook_active: true }), null);
+  assert.match((await callTool('uac_digest', { session_id: 'sess-1' })).events, /ASSISTANT: Rotation implemented/);
 });
 
 let decisionId;
-test('compressor save → auto-accept decisions, proposals for the rest, export PROJECT.md', async () => {
+test('save: confident items auto-accepted, low-confidence waits; anchors; events replaced by the card; diff covers unrecorded edits', async () => {
+  fs.appendFileSync(path.join(repo, 'src', 'auth.js'), '// edited by a background agent\n'); // not seen by hooks
   const dg = await callTool('uac_digest', { session_id: 'sess-1' });
+  assert.match(dg.diff_stat, /src\/auth\.js/);
   const r = await callTool('uac_save', {
-    session_id: 'sess-1', upto_event_id: dg.upto_event_id,
-    summary: { title: 'Refresh token rotation', body: 'Added rotation; tests failing on undefined x.' },
+    session_id: 'sess-1', upto_event_id: dg.upto_event_id, model: 'claude-haiku-4-5',
+    summary: { title: 'Add refresh token rotation in src/auth.js (hashed storage)', body: 'Rotation added; npm test fails on undefined x.' },
     checkpoint: { goal: 'refresh rotation', working: 'rotation', broken: 'npm test', files: ['src/auth.js'], next_steps: ['fix test'], note: 'check x init' },
     candidates: [
-      { op: 'add', type: 'decision', title: 'Refresh tokens are stored hashed', body: 'Store only SHA-256 of refresh tokens.', why: 'DB leak must not expose tokens', files: ['src/auth.js'] },
-      { op: 'add', type: 'constraint', title: 'Never log tokens', body: 'Token values must not appear in logs.', files: ['src/auth.js'] },
+      { op: 'add', type: 'decision', title: 'Refresh tokens are stored hashed', body: 'rotateRefreshToken stores only the SHA-256 of refresh tokens.', why: 'DB leak must not expose tokens',
+        anchors: [{ file: 'src/auth.js', symbol: 'rotateRefreshToken', line: 1 }], confidence: 0.9 },
+      { op: 'add', type: 'constraint', title: 'Never log tokens', body: 'Token values must not appear in logs.', files: ['src/auth.js'], confidence: 0.9 },
+      { op: 'add', type: 'fact', title: 'Maybe uses Redis later', body: 'unclear', confidence: 0.4 },
       { op: 'noop', type: 'fact', title: 'x', body: 'x' },
     ],
   });
-  assert.equal(r.added, 2); assert.equal(r.skipped, 1); assert.deepEqual(r.errors, []);
-  const act = S.search(cli('status').project.id, 'hashed refresh', {});
-  decisionId = act[0].id;
-  assert.equal(act[0].status, 'active');
-  const rv = await callTool('uac_review', {});
-  assert.equal(rv.proposed.length, 1);
-  assert.equal(rv.proposed[0].type, 'constraint');
-  assert.match(fs.readFileSync(path.join(repo, '.context', 'PROJECT.md'), 'utf8'), /Refresh tokens are stored hashed/);
-  assert.equal(cli('status').unsaved.length, 0);
+  assert.equal(r.added, 2); assert.equal(r.pending_review, 1); assert.equal(r.skipped, 1); assert.deepEqual(r.errors, []);
+  assert.ok(r.events_removed > 40, 'raw events replaced by the card');
+  decisionId = S.search(pid(), 'hashed refresh')[0].id;
+  const d = S.memory(decisionId);
+  assert.equal(d.status, 'active'); assert.equal(d.resolved_by, 'auto-policy'); assert.equal(d.source_model, 'claude-haiku-4-5');
+  assert.equal(d.anchors[0].symbol, 'rotateRefreshToken');
+  assert.equal((await callTool('uac_review', {})).proposed.length, 1);
+  assert.match(fs.readFileSync(path.join(repo, '.context', 'PROJECT.md'), 'utf8'), /rotateRefreshToken@src\/auth\.js:1/);
+  assert.equal(S.card('sess-1').title, 'Add refresh token rotation in src/auth.js (hashed storage)');
 });
 
-test('review accept, trigram search, bootstrap budget + why', async () => {
-  const rv = await callTool('uac_review', {});
-  await callTool('uac_resolve', { id: rv.proposed[0].id, action: 'accept' });
-  assert.match(await callTool('uac_search', { query: 'hashe' }), /stored hashed/); // trigram substring
-  const text = await callTool('uac_bootstrap', { session_id: 'sess-1', tier: 'minimal', goal: 'token logging' });
-  assert.match(text, /Must not violate[\s\S]*Never log tokens/);
-  assert.match(text, /Where we left off/);
-  assert.ok(text.length / 4 < 1300, `pack too big: ${text.length}`);
-  const w = await callTool('uac_why', { id: decisionId });
-  assert.ok(w.reasons.length);
-  const fork = await callTool('uac_bootstrap', { session_id: 'sess-1', tier: 'fork' });
-  assert.doesNotMatch(fork, /Where we left off/);
+test('next session: auto-loads knowledge + latest card on the branch, no questions; anchors show freshness', () => {
+  const c = ctxOf(hook('SessionStart', { session_id: 'sess-2', source: 'startup' }));
+  assert.match(c, /Continuing from \(latest session on this branch\)[\s\S]*Add refresh token rotation/);
+  assert.match(c, /Must not violate[\s\S]*Never log tokens/);
+  assert.match(c, /rotateRefreshToken@src\/auth\.js:1/);
+  assert.doesNotMatch(c, /Ask the user/);
+  assert.match(c, /#uac continue <n>/);
+  assert.equal(S.session('sess-2').capture, 'on', 'automatic mode records by default');
 });
 
-test('manual update creates superseding proposal; accept retires the old one', async () => {
-  await callTool('uac_capture', { session_id: 'sess-1', state: 'on', mode: 'manual' });
-  const msg = await callTool('uac_update', { id: decisionId, body: 'Store Argon2id hash of refresh tokens.', reason: 'SHA-256 too fast' });
-  const newId = msg.split(' ')[0];
-  assert.equal(S.memory(decisionId).status, 'active');
-  await callTool('uac_resolve', { id: newId, action: 'accept' });
-  assert.equal(S.memory(decisionId).status, 'superseded');
-  decisionId = newId;
+test('anchors: renamed symbol → ✗, verify tool, commits since → ⚠', async () => {
+  fs.writeFileSync(path.join(repo, 'src', 'auth.js'), 'export function rotateToken() {}\n');
+  let [m] = S.freshness(S.projectFor(repo), [S.memory(decisionId)]);
+  assert.equal(m.freshness.state, 'missing');
+  fs.writeFileSync(path.join(repo, 'src', 'auth.js'), 'export function rotateRefreshToken() {}\n// v2\n');
+  g('commit', '-qam', 'touch auth'); g('commit', '-q', '--allow-empty', '-m', 'noop');
+  [m] = S.freshness(S.projectFor(repo), [S.memory(decisionId)]);
+  assert.equal(m.freshness.state, 'changed'); assert.equal(m.freshness.commits_since, 1);
+  await callTool('uac_verify', { ids: [decisionId] });
+  [m] = S.freshness(S.projectFor(repo), [S.memory(decisionId)]);
+  assert.equal(m.freshness.state, 'verified');
 });
 
-test('git: files changed since source_commit → stale; branch memories promoted on merge', () => {
-  fs.appendFileSync(path.join(repo, 'src', 'auth.js'), 'export const rotate = 2;\n');
-  g('commit', '-qam', 'change auth');
-  g('checkout', '-qb', 'feature/x');
-  const p = S.projectFor(repo);
-  const m = S.propose({ type: 'fact', title: 'Feature X uses flag', body: 'flag FX' }, { s: S.session('sess-1'), p, via: 'user' });
-  assert.equal(m.scope, 'branch');
-  g('checkout', '-q', 'main'); g('merge', '-q', 'feature/x');
-  S.open().prepare("DELETE FROM settings WHERE scope='system'").run(); // bypass hourly throttle
-  S.maintain(S.projectFor(repo));
-  assert.equal(S.memory(m.id).scope, 'project');
-  assert.equal(S.memory(decisionId).status, 'stale');
+test('digest recheck lists memories whose anchored files this session changed', async () => {
+  S.addEvent(S.session('sess-2'), 'tool', { tool: 'Edit', target: 'src/auth.js' });
+  S.addEvent(S.session('sess-2'), 'prompt', { body: 'tweak auth' });
+  S.addEvent(S.session('sess-2'), 'tool', { tool: 'Read', target: 'README.md' });
+  const dg = await callTool('uac_digest', { session_id: 'sess-2' });
+  assert.ok(dg.recheck.some((x) => x.id === decisionId));
 });
 
-test('viewer API: token required, list/edit/delete', async () => {
+test('branches: other active branch shown; messages delivered once cross-session', async () => {
+  g('checkout', '-qb', 'feature/ui');
+  hook('SessionStart', { session_id: 'sess-ui', source: 'startup' });
+  S.addEvent(S.session('sess-ui'), 'prompt', { body: 'Build the dashboard page' });
+  S.addEvent(S.session('sess-ui'), 'tool', { tool: 'Write', target: 'src/dash.js' });
+  S.addEvent(S.session('sess-ui'), 'tool', { tool: 'Write', target: 'src/dash.css' });
+  K.autoCard(S.session('sess-ui'));
+  await callTool('uac_message', { session_id: 'sess-ui', text: 'I renamed getUser to fetchUser', to: 'branch:main' });
+  g('checkout', '-q', 'main');
+  const c = ctxOf(hook('SessionStart', { session_id: 'sess-5', source: 'startup' }));
+  assert.match(c, /Other active branches[\s\S]*feature\/ui[\s\S]*Build the dashboard page/);
+  assert.match(c, /Messages for you[\s\S]*fetchUser/);
+  const again = ctxOf(hook('UserPromptSubmit', { session_id: 'sess-5', prompt: 'hello' }));
+  assert.doesNotMatch(again, /fetchUser/, 'delivered once');
+});
+
+test('#uac continue <n> loads chosen sessions; multi-session bootstrap merges; fresh = knowledge only', async () => {
+  const list = S.listSessions(pid());
+  const n1 = list.find((x) => x.id === 'sess-1').n, nui = list.find((x) => x.id === 'sess-ui').n;
+  const c = ctxOf(hook('UserPromptSubmit', { session_id: 'sess-5', prompt: `#uac continue ${n1} ${nui}` }));
+  assert.match(c, /Continuing from session\(s\)[\s\S]*Add refresh token rotation[\s\S]*Build the dashboard page/);
+  const fresh = await callTool('uac_bootstrap', { session_id: 'sess-5', fresh: true });
+  assert.doesNotMatch(fresh, /Continuing from/);
+  assert.match(fresh, /Never log tokens/);
+});
+
+test('dashboard/CLI "continue from" choice is one-shot for the next session', () => {
+  const n = S.listSessions(pid()).find((x) => x.id === 'sess-ui').n;
+  assert.deepEqual(cli('next', String(n)).sessions, ['sess-ui']);
+  const c = ctxOf(hook('SessionStart', { session_id: 'sess-6', source: 'startup' }));
+  assert.match(c, /## Continuing from\n[\s\S]*Build the dashboard page/);
+  assert.deepEqual(cli('next').sessions, [], 'cleared after use');
+});
+
+test('save consolidates: loaded checkpoints on the same branch are superseded', async () => {
+  S.addEvent(S.session('sess-6'), 'prompt', { body: 'continue ui' });
+  const loaded = JSON.parse(S.session('sess-6').loaded).checkpoints;
+  assert.ok(loaded.length);
+  await callTool('uac_save', { session_id: 'sess-6', upto_event_id: 1e9, summary: { title: 'Continue UI work' }, checkpoint: { goal: 'ui', note: 'n' }, candidates: [] });
+  // sess-ui ran on feature/ui, sess-6 on main → different branch → not superseded
+  assert.equal(S.open().prepare('SELECT superseded_by FROM checkpoints WHERE id = ?').get(loaded[0]).superseded_by, null);
+  S.open().prepare("UPDATE sessions SET branch = 'main' WHERE id = 'sess-ui'").run();
+  S.open().prepare("UPDATE sessions SET loaded = ? WHERE id = 'sess-6'").run(JSON.stringify({ checkpoints: loaded }));
+  S.addEvent(S.session('sess-6'), 'prompt', { body: 'more' });
+  await callTool('uac_save', { session_id: 'sess-6', upto_event_id: 1e9, summary: { title: 'Continue UI work 2' }, checkpoint: { goal: 'ui2', note: 'n' }, candidates: [] });
+  assert.ok(S.open().prepare('SELECT superseded_by FROM checkpoints WHERE id = ?').get(loaded[0]).superseded_by);
+});
+
+test('SessionEnd without a save builds an auto card; nothing is lost', () => {
+  hook('SessionStart', { session_id: 'sess-7', source: 'startup' });
+  hook('UserPromptSubmit', { session_id: 'sess-7', prompt: 'Fix the login redirect bug' });
+  hook('PostToolUse', { session_id: 'sess-7', tool_name: 'Edit', tool_input: { file_path: 'src/login.js' }, tool_response: 'ok' });
+  hook('PostToolUse', { session_id: 'sess-7', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_response: 'ok' });
+  hook('SessionEnd', { session_id: 'sess-7', reason: 'prompt_input_exit' });
+  const c = S.card('sess-7');
+  assert.equal(c.quality, 'auto');
+  assert.match(c.title, /Fix the login redirect bug/);
+});
+
+test('import recovers an unrecorded session from its Claude transcript', () => {
+  const tp = path.join(tmp, 'transcript.jsonl');
+  fs.writeFileSync(tp, [
+    { type: 'user', uuid: 'u1', timestamp: '2026-01-01T00:00:00Z', message: { role: 'user', content: 'Refactor the payment module' } },
+    { type: 'assistant', uuid: 'a1', timestamp: '2026-01-01T00:00:01Z', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: { file_path: 'src/pay.js' } }, { type: 'text', text: 'I extracted chargeCard into its own module so retries are isolated.' }] } },
+    { type: 'assistant', uuid: 'a1', timestamp: '2026-01-01T00:00:01Z', message: { role: 'assistant', content: [] } },
+  ].map((x) => JSON.stringify(x)).join('\n'));
+  hook('SessionStart', { session_id: 'sess-off', source: 'startup', transcript_path: tp });
+  S.setCapture('sess-off', 'off');
+  const r = cli('import', 'sess-off');
+  assert.equal(r.events_imported, 3);
+  assert.match(S.card('sess-off').title, /Refactor the payment module/);
+});
+
+test('delete session cascades (events, card, memories it created); cleanup empty; impact counts', async () => {
+  await callTool('uac_propose', { session_id: 'sess-7', type: 'lesson', title: 'Login redirect needs absolute URL', body: 'x', confidence: 0.9 });
+  const imp = cli('rm', 'sess-7', '--yes');
+  assert.equal(imp.deleted[0].memories, 1);
+  assert.equal(S.session('sess-7'), undefined);
+  assert.equal(S.open().prepare("SELECT COUNT(*) AS n FROM events WHERE session_id = 'sess-7'").get().n, 0);
+  assert.equal(S.search(pid(), 'Login redirect absolute').length, 0);
+  S.open().prepare("INSERT INTO sessions(id, project_id, agent, started_at) VALUES ('empty-1', ?, 'claude', '2020-01-01')").run(pid());
+  assert.equal(cli('rm', '--empty').deleted, 1);
+});
+
+test('projects: same git remote = one project; temp scratch dirs never registered; merge', () => {
+  g('remote', 'add', 'origin', 'https://github.com/acme/app.git');
+  const a = S.projectFor(repo).id;
+  const clone = path.join(tmp, 'clone');
+  spawnSync('git', ['clone', '-q', repo, clone]);
+  spawnSync('git', ['remote', 'set-url', 'origin', 'git@github.com:acme/app.git'], { cwd: clone });
+  assert.equal(S.projectFor(clone).id, a, 'same remote (https vs ssh) = same project');
+  S.projectFor(repo); // switch root back
+  const scratch = path.join(tmp, 'Temp', 'claude', 'x');
+  fs.mkdirSync(scratch, { recursive: true });
+  const before = S.listProjects().length;
+  const r = spawnSync(process.execPath, [BIN, 'hook', 'claude', 'SessionStart'], { input: JSON.stringify({ cwd: scratch, session_id: 'scr', source: 'startup' }), encoding: 'utf8', env: process.env });
+  assert.equal(r.stdout, ''); assert.equal(S.listProjects().length, before);
+  const other = path.join(tmp, 'other'); fs.mkdirSync(other);
+  const o = S.projectFor(other).id;
+  S.mergeProjects(o, a);
+  assert.equal(S.project(o), undefined);
+});
+
+test('mode off: one line, nothing recorded, no questions', () => {
+  cli('mode', 'off');
+  const c = ctxOf(hook('SessionStart', { session_id: 'sess-off2', source: 'startup' }));
+  assert.match(c, /^\[UAC is off/);
+  hook('UserPromptSubmit', { session_id: 'sess-off2', prompt: 'do stuff' });
+  assert.equal(S.open().prepare("SELECT COUNT(*) AS n FROM events WHERE session_id = 'sess-off2'").get().n, 0);
+  cli('mode', 'automatic');
+});
+
+test('dashboard API: token, sessions with cards, cascade delete, next, verify, mute, messages, cleanup', async () => {
   const { startViewer } = await import('../plugin/src/view.mjs');
   const { server, url } = await startViewer({ port: 0, token: 'tok' });
-  const base = new URL(url).origin;
-  const pid = cli('status').project.id;
-  assert.equal((await fetch(`${base}/api/projects`)).status, 401);
+  const base = new URL(url).origin, P2 = pid();
   const H = { 'x-uac-token': 'tok', 'content-type': 'application/json' };
-  const tmpMem = S.propose({ type: 'fact', title: 'Throwaway', body: 'to edit and delete' }, { s: S.session('sess-1'), p: S.projectFor(repo), via: 'user' });
-  const mems = (await (await fetch(`${base}/api/memories?project=${pid}`, { headers: H })).json()).filter((m) => m.id === tmpMem.id);
-  assert.equal(mems.length, 1);
-  const ed = await (await fetch(`${base}/api/memories/${mems[0].id}`, { method: 'PUT', headers: H, body: JSON.stringify({ title: 'Edited title' }) })).json();
-  assert.equal(ed.title, 'Edited title'); assert.equal(ed.source, 'user');
-  const full = await (await fetch(`${base}/api/memories/${mems[0].id}`, { headers: H })).json();
-  assert.ok(full.versions.length >= 2);
-  assert.equal((await fetch(`${base}/api/memories/${mems[0].id}`, { method: 'DELETE', headers: H })).status, 200);
-  const h = await (await fetch(`${base}/api/health?project=${pid}`, { headers: H })).json();
-  assert.ok(h.sessions >= 1);
+  const j = async (p, m = 'GET', b) => (await fetch(base + p, { method: m, headers: H, body: b && JSON.stringify(b) })).json();
+  assert.equal((await fetch(`${base}/api/projects`)).status, 401);
+  const sessions = await j(`/api/sessions?project=${P2}`);
+  const s1 = sessions.find((x) => x.id === 'sess-1');
+  assert.ok(s1.n >= 1 && s1.card.title);
+  assert.deepEqual((await j(`/api/next?project=${P2}`, 'PUT', { sessions: [String(s1.n)] })).sessions, ['sess-1']);
+  const mem = (await j(`/api/memories?project=${P2}`)).find((m) => m.id === decisionId);
+  assert.ok(mem.freshness);
+  assert.equal((await j(`/api/memories/${decisionId}/verify`, 'POST')).id, decisionId);
+  assert.equal((await j(`/api/memories/${decisionId}`, 'PUT', { muted: true })).muted, true);
+  assert.doesNotMatch(K.bootstrap(S.session('sess-5'), S.projectFor(repo), { record: false }).text, /stored hashed|Argon/);
+  await j(`/api/memories/${decisionId}`, 'PUT', { muted: false });
+  assert.ok((await j(`/api/memories?project=${P2}&auto=1`)).length >= 1);
+  const msg = await j(`/api/messages?project=${P2}`, 'POST', { text: 'from dashboard', to: 'all' });
+  assert.equal(msg.text, 'from dashboard');
+  const imp = await j('/api/sessions/sess-5/impact');
+  const del = await j('/api/sessions/sess-5', 'DELETE');
+  assert.deepEqual(del.deleted, imp);
+  assert.equal(S.session('sess-5'), undefined);
+  assert.equal(typeof (await j(`/api/sessions/cleanup?project=${P2}`, 'POST', { empty: true })).deleted, 'number');
+  assert.match((await j(`/api/health?project=${P2}`)).db, /uac\.db$/);
   assert.match(await (await fetch(`${base}/`)).text(), /<html/i);
   server.close();
 });
 
-test('MCP stdio protocol: initialize, tools/list, tools/call', async () => {
+test('MCP stdio protocol: initialize, tools/list (19 tools), tools/call, errors', async () => {
   const child = spawn(process.execPath, [BIN, 'mcp'], { cwd: repo, env: process.env });
   let buf = '';
   const replies = [];
@@ -181,53 +291,27 @@ test('MCP stdio protocol: initialize, tools/list, tools/call', async () => {
   child.kill();
   const by = Object.fromEntries(replies.map((r) => [r.id, r]));
   assert.equal(by[1].result.serverInfo.name, 'uac');
-  assert.equal(by[2].result.tools.length, 16);
+  assert.equal(by[2].result.tools.length, 19);
   assert.match(by[3].result.content[0].text, /tokens/i);
   assert.equal(by[4].result.isError, true);
 });
 
-test('compact start re-injects the loaded pack + precompact snapshot', () => {
-  hook('PreCompact', { trigger: 'auto' });
-  const out = hook('SessionStart', { source: 'compact' });
-  assert.match(out.hookSpecificOutput.additionalContext, /compacted[\s\S]*UAC context pack[\s\S]*Pre-compaction snapshot/);
+test('compact start re-injects the loaded context + precompact snapshot', () => {
+  hook('SessionStart', { session_id: 'sess-8', source: 'startup' });
+  hook('UserPromptSubmit', { session_id: 'sess-8', prompt: 'work on auth' });
+  hook('PreCompact', { session_id: 'sess-8', trigger: 'auto' });
+  const c = ctxOf(hook('SessionStart', { session_id: 'sess-8', source: 'compact' }));
+  assert.match(c, /compacted[\s\S]*# UAC ·[\s\S]*Pre-compaction snapshot/);
 });
 
-test('user chooses the next session context (dashboard/CLI), one-shot; per-session detail', async () => {
-  const { startViewer } = await import('../plugin/src/view.mjs');
-  const { server, url } = await startViewer({ port: 0, token: 'tok2' });
-  const base = new URL(url).origin, pid = cli('status').project.id;
-  const H = { 'x-uac-token': 'tok2', 'content-type': 'application/json' };
-  const summary = S.open().prepare("SELECT id FROM summaries LIMIT 1").get().id;
-  const mem = S.search(pid, 'Never log tokens')[0].id;
-  const k = await (await fetch(`${base}/api/packs?project=${pid}`, { method: 'POST', headers: H, body: JSON.stringify({ name: 'only logging rule', ids: [mem, summary], next: true }) })).json();
-  assert.equal(k.next, true);
-  assert.equal((await (await fetch(`${base}/api/next?project=${pid}`, { headers: H })).json()).pack, k.id);
-  const menuOut = hook('SessionStart', { session_id: 'sess-4', source: 'startup' }).hookSpecificOutput.additionalContext;
-  assert.match(menuOut, /pre-selected pack/);
-  const text = await callTool('uac_bootstrap', { session_id: 'sess-4' }); // no tier given → uses the user's choice
-  assert.match(text, new RegExp(`pack ${k.id}`));
-  assert.match(text, /Never log tokens/);
-  assert.match(text, new RegExp(summary));
-  assert.equal(cli('next').pack, null, 'one-shot: cleared after loading');
-  const d = await (await fetch(`${base}/api/sessions/sess-1`, { headers: H })).json();
-  assert.ok(d.events.length > 10 && d.summaries.length === 1 && d.checkpoints.length >= 1 && d.memories.length >= 2);
-  assert.equal(d.events.some((e) => e.kind === 'pending'), false);
-  assert.equal(cli('session', 'sess-4').loaded.pack, k.id);
-  assert.equal((await fetch(`${base}/api/packs/${k.id}`, { method: 'DELETE', headers: H })).status, 200);
-  server.close();
+test('handoff marks this session as the next session context', async () => {
+  const h = await callTool('uac_handoff', { session_id: 'sess-1' });
+  assert.ok(h.next_sessions.includes('sess-1'));
+  const c = ctxOf(hook('SessionStart', { session_id: 'sess-9', source: 'startup' }));
+  assert.match(c, /## Continuing from\n[\s\S]*Add refresh token rotation/);
 });
 
-test('opt-out deletes pending prompts', async () => {
-  hook('SessionStart', { session_id: 'sess-3', source: 'startup' });
-  hook('UserPromptSubmit', { session_id: 'sess-3', prompt: 'private first prompt' });
-  await callTool('uac_capture', { session_id: 'sess-3', state: 'off' });
-  assert.equal(S.open().prepare("SELECT COUNT(*) AS n FROM events WHERE session_id = 'sess-3'").get().n, 0);
-});
-
-test('handoff pack loads in a second (parallel) session', async () => {
-  const h = await callTool('uac_handoff', { session_id: 'sess-1', name: 'auth work' });
-  hook('SessionStart', { session_id: 'sess-2', source: 'startup' });
-  const text = await callTool('uac_bootstrap', { session_id: 'sess-2', pack: h.pack });
-  assert.match(text, new RegExp(`pack ${h.pack}`));
-  assert.match(text, /Never log tokens/);
+test('doctor reports db path, integrity, fts5', () => {
+  const d = cli('doctor');
+  assert.equal(d.integrity, 'ok'); assert.equal(d.fts5, true); assert.match(d.db, /uac\.db$/);
 });

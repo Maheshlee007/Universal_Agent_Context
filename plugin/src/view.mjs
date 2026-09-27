@@ -5,7 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import sea from 'node:sea';
-import { all, get, run, P } from './db.mjs';
+import { all, get, run, P, home } from './db.mjs';
 import * as S from './store.mjs';
 import * as K from './pack.mjs';
 
@@ -13,10 +13,11 @@ import * as K from './pack.mjs';
 const readHtml = () => sea.isSea() ? sea.getAsset('viewer.html', 'utf8')
   : fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'viewer', 'viewer.html'));
 
-const sessionsOf = (pid) => all(`SELECT s.id, s.agent, s.branch, s.capture, s.status, s.started_at, s.ended_at, s.title,
-    (SELECT COUNT(*) FROM events e WHERE e.session_id = s.id) AS events,
-    (SELECT COUNT(*) FROM events e WHERE e.session_id = s.id AND e.id > s.saved_event_id) AS unsaved
-  FROM sessions s WHERE s.project_id = ? ORDER BY s.started_at DESC LIMIT 200`, pid);
+const withFresh = (pid, rows) => {
+  const pr = S.project(pid);
+  if (!pr || !fs.existsSync(pr.root)) return rows;
+  return S.freshness(S.projectFor(pr.root), rows);
+};
 
 function health(pid) {
   const r = all('SELECT tokens FROM retrievals WHERE project_id = ?', pid);
@@ -26,43 +27,51 @@ function health(pid) {
     sessions: get('SELECT COUNT(*) AS n FROM sessions WHERE project_id = ?', pid).n,
     events: get('SELECT COUNT(*) AS n FROM events e JOIN sessions s ON s.id = e.session_id WHERE s.project_id = ?', pid).n,
     avg_pack_tokens: r.length ? Math.round(r.reduce((a, x) => a + x.tokens, 0) / r.length) : 0,
-    raw_chars: sums.raw, pack_chars: sums.packed,
+    raw_chars: sums.raw, pack_chars: sums.packed, db: path.join(home(), 'uac.db'),
   };
 }
+const notFound = () => { throw Object.assign(new Error('not found'), { code: 404 }); };
 
 const routes = [
-  ['GET', /^\/api\/projects$/, () => all('SELECT id, root, name, mode FROM projects ORDER BY name')],
-  ['GET', /^\/api\/sessions$/, (q) => sessionsOf(q.project)],
+  ['GET', /^\/api\/projects$/, () => S.listProjects()],
+  ['POST', /^\/api\/projects\/merge$/, (q, b) => { S.mergeProjects(b.from, b.into); return { ok: true }; }],
+  ['DELETE', /^\/api\/projects\/([^/]+)$/, (q, b, id) => { S.deleteProject(id); return { ok: true }; }],
+  ['GET', /^\/api\/sessions$/, (q) => S.listSessions(q.project, { limit: 200 })],
+  ['POST', /^\/api\/sessions\/cleanup$/, (q) => ({ deleted: S.cleanupEmpty(q.project) })],
+  ['GET', /^\/api\/sessions\/([^/]+)\/impact$/, (q, b, id) => S.sessionImpact(id)],
   ['PUT', /^\/api\/sessions\/([^/]+)\/capture$/, (q, b, id) => { S.setCapture(id, b.state); return { ok: true }; }],
-  ['DELETE', /^\/api\/sessions\/([^/]+)$/, (q, b, id) => {
-    run('DELETE FROM events WHERE session_id = ?', id); run('DELETE FROM sessions WHERE id = ?', id); return { ok: true };
+  ['GET', /^\/api\/sessions\/([^/]+)$/, (q, b, id) => S.sessionDetail(id) || notFound()],
+  ['DELETE', /^\/api\/sessions\/([^/]+)$/, (q, b, id) => ({ ok: true, deleted: S.deleteSession(id) })],
+  ['GET', /^\/api\/next$/, (q) => ({ sessions: S.nextSessions(q.project), pack: S.nextPack(q.project) })],
+  ['PUT', /^\/api\/next$/, (q, b) => {
+    if (b.pack !== undefined) S.setNextPack(q.project, b.pack || null);
+    return { sessions: b.sessions ? S.setNextSessions(q.project, S.resolveSessionRefs(q.project, b.sessions)) : S.nextSessions(q.project), pack: S.nextPack(q.project) };
   }],
   ['GET', /^\/api\/memories$/, (q) => {
+    if (q.auto) return withFresh(q.project, S.recentlyAutoAccepted(q.project));
     const rows = q.q ? S.search(q.project, q.q, { type: q.type || undefined, status: q.status || undefined, limit: 200 })
       : all(`SELECT * FROM memories WHERE (project_id = ? OR project_id IS NULL) ${q.status ? 'AND status = ?' : ''} ${q.type ? 'AND type = ?' : ''}
           ORDER BY pinned DESC, updated_at DESC LIMIT 500`, ...[q.project, q.status, q.type].filter(Boolean)).map(S.hydrate);
-    return rows;
+    return withFresh(q.project, rows);
   }],
   ['GET', /^\/api\/memories\/([^/]+)$/, (q, b, id) => {
-    const m = S.memory(id);
-    if (!m) throw Object.assign(new Error('not found'), { code: 404 });
-    return { ...m, versions: all('SELECT * FROM memory_versions WHERE memory_id = ? ORDER BY version DESC', id),
+    const m = S.memory(id) || notFound();
+    return { ...withFresh(m.project_id, [m])[0], versions: all('SELECT * FROM memory_versions WHERE memory_id = ? ORDER BY version DESC', id),
       relations: all('SELECT * FROM memory_relations WHERE a = ? OR b = ?', id, id) };
   }],
-  ['PUT', /^\/api\/memories\/([^/]+)$/, (q, b, id) => after(S.updateMemory(id, b, { by: 'user', reason: b.reason || 'edited in viewer' }))],
-  ['POST', /^\/api\/memories\/([^/]+)\/resolve$/, (q, b, id) => after(S.resolve(id, b.action, b.body))],
-  ['DELETE', /^\/api\/memories\/([^/]+)$/, (q, b, id) => {
-    const m = S.memory(id);
-    run('DELETE FROM memories WHERE id = ?', id); run('DELETE FROM memory_versions WHERE memory_id = ?', id);
-    run('DELETE FROM memory_relations WHERE a = ? OR b = ?', id, id);
-    if (m) after(m);
-    return { ok: true };
+  ['PUT', /^\/api\/memories\/([^/]+)$/, (q, b, id) => after(S.updateMemory(id, b, { by: 'user-dashboard', reason: b.reason || 'edited in dashboard' }))],
+  ['POST', /^\/api\/memories\/([^/]+)\/verify$/, (q, b, id) => {
+    const m = S.memory(id) || notFound();
+    return after(S.verifyMemory(id, S.projectFor(S.project(m.project_id)?.root || process.cwd())));
   }],
+  ['POST', /^\/api\/memories\/([^/]+)\/resolve$/, (q, b, id) => after(S.resolve(id, b.action, b.body, 'user-dashboard'))],
+  ['DELETE', /^\/api\/memories\/([^/]+)$/, (q, b, id) => { after(S.deleteMemory(id)); return { ok: true }; }],
   ['GET', /^\/api\/review$/, (q) => S.review(q.project)],
+  ['GET', /^\/api\/messages$/, (q) => S.listMessages(q.project)],
+  ['POST', /^\/api\/messages$/, (q, b) => { const pr = S.project(q.project) || notFound(); return S.postMessage(null, pr, b.text, b.to || 'all'); }],
   ['GET', /^\/api\/checkpoints$/, (q) => all('SELECT * FROM checkpoints WHERE project_id = ? ORDER BY ts DESC LIMIT 200', q.project)
     .map((c) => ({ ...c, files: P(c.files, []), next_steps: P(c.next_steps, []) }))],
   ['GET', /^\/api\/summaries$/, (q) => all('SELECT * FROM summaries WHERE project_id = ? ORDER BY created_at DESC LIMIT 200', q.project)],
-  ['GET', /^\/api\/sessions\/([^/]+)$/, (q, b, id) => S.sessionDetail(id) || (() => { throw Object.assign(new Error('not found'), { code: 404 }); })()],
   ['GET', /^\/api\/packs$/, (q) => K.listPacks(q.project)],
   ['POST', /^\/api\/packs$/, (q, b) => {
     if (!Array.isArray(b.ids) || !b.ids.length) throw new Error('ids required');
@@ -73,8 +82,6 @@ const routes = [
     if (k && S.nextPack(k.project_id) === id) S.setNextPack(k.project_id, null);
     run('DELETE FROM packs WHERE id = ?', id); return { ok: true };
   }],
-  ['GET', /^\/api\/next$/, (q) => ({ pack: S.nextPack(q.project) })],
-  ['PUT', /^\/api\/next$/, (q, b) => ({ pack: S.setNextPack(q.project, b.pack || null) })],
   ['GET', /^\/api\/retrievals$/, (q) => all('SELECT * FROM retrievals WHERE project_id = ? ORDER BY id DESC LIMIT 100', q.project)
     .map((r) => ({ ...r, item_ids: P(r.item_ids, []), reasons: P(r.reasons, {}) }))],
   ['GET', /^\/api\/health$/, (q) => health(q.project)],

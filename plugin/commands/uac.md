@@ -1,91 +1,59 @@
 ---
-description: Control UAC (Universal Agent Context) memory for this session - capture, save, load, review, view, handoff.
-argument-hint: start|pause|resume|stop|save|status|load|review|view|handoff|forget|init|refresh|mode
+description: Control UAC (Universal Agent Context) for this session - record on/off, save, continue from earlier sessions, messages, review, dashboard.
+argument-hint: on|off|pause|resume|save|stop|status|fresh|continue <n…>|import|msg <text>|mode off|manual|automatic|review|view|handoff|rm <n…>|doctor|init|refresh|forget
 ---
 
-The user ran `/uac $ARGUMENTS`.
+The user ran `/universal-agent-context:uac $ARGUMENTS` (this is how the command is invoked in Claude Code).
 
-Use the uac MCP tools. In Claude Code they appear as `mcp__uac__<name>` or with a plugin prefix. The short names are used below. Get the session id from the UAC SessionStart menu if one is in context, otherwise leave `session_id` out.
+**Tip for the user:** typing `#uac on`, `#uac off`, `#uac pause`, `#uac resume`, `#uac save`, `#uac stop`, `#uac fresh`, `#uac continue 2 3`, `#uac import` or `#uac msg <text>` anywhere in a prompt does the same thing in every host (Claude, Codex, Gemini, Cursor, Copilot…). The hook handles it with no model involved. Mention this once if the user seems to be learning the commands.
 
-The CLI fallback, for when MCP isn't available, is `node "${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs" <command> --json`.
+Use the uac MCP tools (in Claude Code: `mcp__uac__<name>` or with a plugin prefix; short names below). Take the session id from the injected UAC header if present, otherwise leave `session_id` out. CLI fallback when MCP isn't available: `node "${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs" <command> --json`.
 
-Take the first word of `$ARGUMENTS` as the action and everything after it as the rest. If there's no action, treat it as `status`.
+First word of `$ARGUMENTS` = action, the rest = arguments. No action = `status`.
 
 ## Actions
 
-**start**
-1. Call `uac_capture({state:"on"})`.
-2. If nothing has been loaded this session, ask the load tier with AskUserQuestion: Minimal / Relevant / Deep / Fork / None. Then call `uac_bootstrap({tier, goal:<current task>})`.
-3. Tell the user `UAC capture on`.
+**on** — `uac_capture({state:"on"})`. Reply `UAC recording`.
 
-**pause**
-1. Call `uac_checkpoint({goal, working, broken, files, next_steps, note})` with the current state of the work. `note` is what you'd tell the next dev.
-2. Call `uac_capture({state:"paused"})`.
-3. Tell the user `UAC paused - checkpoint saved`.
+**off** — `uac_capture({state:"off"})`. Reply `UAC off for this session`.
 
-**resume**
-1. Call `uac_capture({state:"on"})`.
-2. Call `uac_timeline({})`. Restate the latest checkpoint's next steps in 1 to 3 lines.
+**pause** — `uac_checkpoint({goal, working, broken, files, next_steps, note})` with the current state (`note` = what you'd tell the next dev), then `uac_capture({state:"paused"})`. Reply `UAC paused - checkpoint saved`.
 
-**save**
-1. Spawn the `uac-compressor` subagent with the Agent (Task) tool. The prompt is `Save UAC session <session_id>`.
-2. Relay its one-line result to the user. Don't summarize the session yourself.
+**resume** — `uac_capture({state:"on"})`. Reply `UAC recording`.
 
-**stop**
-1. Do everything under **save**.
-2. Call `uac_capture({state:"off"})`.
-3. Tell the user `UAC stopped - saved and capture off`.
+**save** — Spawn the `uac-compressor` subagent (Agent/Task tool) with the prompt `Save UAC session <session_id>`. Relay its one-line result. Don't summarize the session yourself.
 
-**status**
-- Run `node "${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs" status --json`.
-- Report in at most 4 lines:
-  - mode and capture state
-  - counts: active / proposed / stale / conflict / tasks
-  - any unsaved sessions
-- If anything is proposed or in conflict, suggest `/uac review`.
+**stop** — Do **save**, then `uac_capture({state:"off"})`. Reply `UAC stopped - saved and off`.
 
-**load [pack-id | tier]**
-- Given a `pk-…` id, call `uac_bootstrap({pack:<id>})`.
-- Given a tier name, call `uac_bootstrap({tier})`.
-- Given nothing, call `uac_pack({action:"list"})` and ask which pack with AskUserQuestion.
-- Treat what's loaded as possibly stale. Verify critical facts against the code.
+**status** — Run `node "${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs" status --json`. Report in at most 4 lines: mode and recording state, knowledge counts, unsaved sessions, items waiting for review. If conflicts or low-confidence items wait, suggest `/universal-agent-context:uac review`.
 
-**review**
-1. Call `uac_review({})`.
-2. If it's empty, say so and stop.
-3. For each proposed item, show the type, title, body, why and files. Ask with AskUserQuestion: Accept / Reject / Edit.
-   - Edit: take the user's wording as the new `body`.
-4. For each conflict, show both sides. Ask with AskUserQuestion: Keep new / Keep existing / Merge (edit).
-   - Keep new: accept the new item.
-   - Keep existing: reject the new item.
-   - Merge: accept the new item with the merged `body`.
-5. Apply each answer with `uac_resolve({id, action:"accept"|"reject", body?})`.
-6. Batch up to 4 items per AskUserQuestion call.
-7. At the end, give one line: `accepted N, rejected M, edited K`.
+**fresh** — `uac_bootstrap({fresh:true})`: reload with project knowledge only, no session cards. Say what was loaded in one line.
 
-**view**
-- Run `node "${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs" view` in the background (Bash `run_in_background`). It keeps running.
-- Read the `UAC viewer: http://127.0.0.1:…/?t=…` line from its output and give the user that URL.
+**continue <n…>** — `uac_bootstrap({sessions:[<n…>]})` with the session numbers as given (same numbering as `uac sessions` and the dashboard). No numbers: run `node "${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs" sessions` and show the first 6 as `#n title`, then ask which. Treat what's loaded as claims to verify (see `uac-protocol`).
 
-**handoff [name]**
-- Follow the `uac-handoff` skill.
-- The short version: `uac_checkpoint`, then `uac_handoff({name})`. Give the user the pack id and the paste-ready line `/uac load <pack-id>`.
+**import [n]** — Run `node "${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs" import <n> --json` (no n = the current session). It rebuilds events from the host transcript of a session that ran without recording. Then do **save** for that session.
 
-**forget <id | query>**
-- Given a query, `uac_search` first and confirm which ids with AskUserQuestion.
-- Call `uac_invalidate({id, reason:"user asked to forget"})` for each one.
-- Agents can't hard delete. If the user wants it erased permanently, send them to `/uac view` and its delete button.
+**msg <text>** — `uac_message({text, to})`. `to` defaults to `all`; if the user names a branch or session use `branch:<name>` / `session:<id>`. Reply `Message posted to <to>`.
 
-**init**
-- Follow the `uac-init-knowledge` skill.
+**mode off|manual|automatic** — Run `node "${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs" mode <mode> --json` and confirm in one line. No mode given: ask once with AskUserQuestion:
+- off: nothing loaded, nothing recorded
+- manual: loads project knowledge and this branch's latest session card; records only after `#uac on`
+- automatic: loads and records; saves at the end
 
-**refresh**
-- Follow the `uac-refresh` skill.
+**review** — Follow the `uac-review` skill (only conflicts and low-confidence items need a human).
 
-**mode [manual | automatic]**
-- If no mode is given, ask with AskUserQuestion:
-  - manual: nothing is saved without /uac save, and every proposal is reviewed
-  - automatic: capture is on, saves happen at the Stop threshold, and decisions, architecture and lessons are auto-accepted
-- Then run `node "${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs" mode <mode> --json` and confirm in one line.
+**view** — Run `node "${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs" view` in the background (Bash `run_in_background`; it keeps running). Give the user the `UAC viewer: http://127.0.0.1:…/?t=…` URL from its output.
+
+**handoff** — Follow the `uac-handoff` skill.
+
+**rm <n…> | --empty** — Deleting a session cascades (events, card, and memories created only by that session). Run `node "${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs" sessions` and show the sessions to delete with their titles, confirm with AskUserQuestion, then run `node "${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs" rm <n…> --json` (or `rm --empty` for sessions with no events and no card). Report the deleted counts.
+
+**doctor** — Run `node "${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs" doctor`. Relay DB path, sizes, integrity, FTS5, WAL size and recent hook errors; point out anything wrong.
+
+**init** — Follow the `uac-init-knowledge` skill.
+
+**refresh** — Follow the `uac-refresh` skill.
+
+**forget <id | query>** — Given a query, `uac_search` first and confirm the ids with AskUserQuestion. Then `uac_invalidate({id, reason:"user asked to forget"})` for each. Permanent deletion is the user's job, via the dashboard (`view`) or `uac forget <id>`.
 
 Anything else: list the actions above in one line.

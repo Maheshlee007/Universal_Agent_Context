@@ -63,12 +63,32 @@ export function open() {
   if (db) return db;
   fs.mkdirSync(home(), { recursive: true });
   db = new DatabaseSync(path.join(home(), 'uac.db'));
-  db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;');
+  // busy_timeout MUST come first: switching to WAL itself needs a lock ("database is locked" at SessionStart otherwise)
+  db.exec('PRAGMA busy_timeout=5000;');
+  db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;');
   db.exec(SCHEMA);
+  migrate();
   try { db.exec(FTS); hasFts = true; } catch { hasFts = false; } // system SQLite without FTS5 → LIKE search
   drainSpool();
   return db;
 }
+
+// v0.3 columns/tables. ADD COLUMN is idempotent here (duplicate-column errors are ignored).
+const V3_COLUMNS = [
+  ['sessions', 'model TEXT'], ['sessions', 'quality TEXT'],
+  ['memories', 'anchors TEXT'], ['memories', 'muted INTEGER DEFAULT 0'], ['memories', 'source_model TEXT'],
+  ['memories', 'resolved_by TEXT'], ['memories', 'resolved_at TEXT'], ['memories', 'verified_commit TEXT'],
+  ['checkpoints', 'superseded_by TEXT'], ['summaries', 'quality TEXT'], ['summaries', 'model TEXT'],
+];
+function migrate() {
+  for (const [t, col] of V3_COLUMNS) { try { db.exec(`ALTER TABLE ${t} ADD COLUMN ${col}`); } catch { /* exists */ } }
+  db.exec(`CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, project_id TEXT, from_session TEXT, from_agent TEXT,
+      from_branch TEXT, recipient TEXT, text TEXT, created_at TEXT);
+    CREATE TABLE IF NOT EXISTS message_reads(message_id TEXT, session_id TEXT, PRIMARY KEY(message_id, session_id));`);
+}
+
+// Keep the -wal file from growing forever (called after saves and at session end).
+export function checkpointWal() { try { open().exec('PRAGMA wal_checkpoint(TRUNCATE);'); } catch { /* busy: next time */ } }
 
 // node:sqlite rejects undefined and booleans: normalise once here for every caller.
 const b = (p) => p.map((v) => (v === undefined ? null : v === true ? 1 : v === false ? 0 : v));

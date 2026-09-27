@@ -1,8 +1,8 @@
 {
   "name": "universal-agent-context",
   "displayName": "Universal Agent Context (UAC)",
-  "description": "Local memory for coding agents: capture toggle, session-start context picker, memory tree and viewer.",
-  "version": "0.1.0",
+  "description": "Local memory for coding agents: recording toggle, continue-from-session picker, session/knowledge trees, messages and dashboard.",
+  "version": "0.3.0",
   "publisher": "uac-dev",
   "engines": {
     "vscode": "^1.90.0"
@@ -20,96 +20,46 @@
   },
   "contributes": {
     "commands": [
-      {
-        "command": "uac.toggleCapture",
-        "title": "Toggle Capture",
-        "category": "UAC"
-      },
-      {
-        "command": "uac.pause",
-        "title": "Pause Capture",
-        "category": "UAC"
-      },
-      {
-        "command": "uac.resume",
-        "title": "Resume Capture",
-        "category": "UAC"
-      },
-      {
-        "command": "uac.stop",
-        "title": "Stop Capture",
-        "category": "UAC"
-      },
-      {
-        "command": "uac.chooseContext",
-        "title": "Choose Session Context",
-        "category": "UAC"
-      },
-      {
-        "command": "uac.openViewer",
-        "title": "Open Viewer",
-        "category": "UAC",
-        "icon": "$(link-external)"
-      },
-      {
-        "command": "uac.review",
-        "title": "Review Proposals",
-        "category": "UAC"
-      },
-      {
-        "command": "uac.refresh",
-        "title": "Refresh",
-        "category": "UAC",
-        "icon": "$(refresh)"
-      },
-      {
-        "command": "uac.install",
-        "title": "Install Hooks for Agents",
-        "category": "UAC"
-      },
-      {
-        "command": "uac.nextSessionContext",
-        "title": "Choose context for next session",
-        "category": "UAC"
-      }
+      { "command": "uac.menu", "title": "Actions…", "category": "UAC" },
+      { "command": "uac.toggleCapture", "title": "Start/Stop Recording", "category": "UAC" },
+      { "command": "uac.setMode", "title": "Set Mode (off/manual/automatic)", "category": "UAC" },
+      { "command": "uac.continueFrom", "title": "Continue from session…", "category": "UAC", "icon": "$(debug-continue)" },
+      { "command": "uac.openSession", "title": "Open in dashboard", "category": "UAC" },
+      { "command": "uac.deleteSession", "title": "Delete", "category": "UAC" },
+      { "command": "uac.deleteEmpty", "title": "Delete empty sessions", "category": "UAC", "icon": "$(trash)" },
+      { "command": "uac.sendMessage", "title": "Send message to other sessions", "category": "UAC" },
+      { "command": "uac.openViewer", "title": "Open Dashboard", "category": "UAC", "icon": "$(link-external)" },
+      { "command": "uac.review", "title": "Review Knowledge", "category": "UAC" },
+      { "command": "uac.refresh", "title": "Refresh", "category": "UAC", "icon": "$(refresh)" },
+      { "command": "uac.install", "title": "Install for detected tools", "category": "UAC" }
     ],
     "viewsContainers": {
       "activitybar": [
-        {
-          "id": "uac",
-          "title": "UAC",
-          "icon": "media/uac.svg"
-        }
+        { "id": "uac", "title": "UAC", "icon": "media/uac.svg" }
       ]
     },
     "views": {
       "uac": [
-        {
-          "id": "uac.memories",
-          "name": "Memories"
-        },
-        {
-          "id": "uac.review",
-          "name": "Review"
-        },
-        {
-          "id": "uac.sessions",
-          "name": "Sessions"
-        }
+        { "id": "uac.sessions", "name": "Sessions" },
+        { "id": "uac.knowledge", "name": "Knowledge" },
+        { "id": "uac.review", "name": "Review" }
       ]
     },
     "menus": {
       "view/title": [
-        {
-          "command": "uac.refresh",
-          "when": "view == uac.memories || view == uac.review || view == uac.sessions",
-          "group": "navigation"
-        },
-        {
-          "command": "uac.openViewer",
-          "when": "view == uac.memories || view == uac.review || view == uac.sessions",
-          "group": "navigation"
-        }
+        { "command": "uac.continueFrom", "when": "view == uac.sessions", "group": "navigation@1" },
+        { "command": "uac.deleteEmpty", "when": "view == uac.sessions", "group": "navigation@2" },
+        { "command": "uac.refresh", "when": "view == uac.knowledge || view == uac.review || view == uac.sessions", "group": "navigation@8" },
+        { "command": "uac.openViewer", "when": "view == uac.knowledge || view == uac.review || view == uac.sessions", "group": "navigation@9" }
+      ],
+      "view/item/context": [
+        { "command": "uac.continueFrom", "when": "view == uac.sessions && viewItem == session", "group": "1@1" },
+        { "command": "uac.openSession", "when": "view == uac.sessions && viewItem == session", "group": "1@2" },
+        { "command": "uac.deleteSession", "when": "view == uac.sessions && viewItem == session", "group": "9@1" }
+      ],
+      "commandPalette": [
+        { "command": "uac.openSession", "when": "false" },
+        { "command": "uac.deleteSession", "when": "false" }
       ]
     },
     "configuration": {

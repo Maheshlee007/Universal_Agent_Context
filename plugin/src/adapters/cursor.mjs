@@ -63,7 +63,7 @@ export function install({ root, uacCmd, dryRun }) {
     }
   }, dryRun);
   const mcp = editJson(path.join(dir, 'mcp.json'), (cfg) => {
-    cfg.mcpServers = { ...cfg.mcpServers, uac: mcpServer({ root }) };
+    cfg.mcpServers = { ...cfg.mcpServers, uac: mcpServer({ root, uacCmd }) };
   }, dryRun);
   return { files: [hooks, mcp] };
 }

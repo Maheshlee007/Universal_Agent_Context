@@ -1,0 +1,8 @@
+{
+  "name": "uac",
+  "owner": { "name": "UAC contributors" },
+  "description": "Universal Agent Context (UAC) plugins",
+  "plugins": [
+    { "name": "universal-agent-context", "source": "./", "description": "Universal Agent Context: cross-agent session memory and project knowledge." }
+  ]
+}

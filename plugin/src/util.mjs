@@ -92,3 +92,9 @@ export function changedFiles(root) {
 }
 
 export const tokens = (s) => Math.ceil((s || '').length / 4);
+
+// The "what was touched" field of a tool call, across hosts' tool input shapes.
+export function target(input = {}) {
+  if (typeof input !== 'object' || !input) return null;
+  return input.file_path ?? input.path ?? input.notebook_path ?? input.command ?? input.pattern ?? input.url ?? input.query ?? input.description ?? null;
+}

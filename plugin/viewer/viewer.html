@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>UAC viewer</title>
+<title>UAC</title>
 <style>
 :root{color-scheme:light dark;--bg:#fafafa;--fg:#1d1f23;--mut:#6b7079;--bd:#dcdfe4;--card:#fff;--acc:#2f6fd6;--ok:#1f8a4c;--bad:#c93a3a;--warn:#b7791f;--hl:#eef3fc}
 @media (prefers-color-scheme:dark){:root{--bg:#15171a;--fg:#e3e5e8;--mut:#8b919a;--bd:#2c3036;--card:#1c1f23;--acc:#5b93ea;--ok:#3fb56f;--bad:#e25c5c;--warn:#d9a441;--hl:#232a36}}
@@ -16,44 +16,56 @@ nav button{background:none;border:0;border-bottom:2px solid transparent;border-r
 nav button.on{color:var(--fg);border-bottom-color:var(--acc)}
 .badge{display:inline-block;min-width:16px;padding:0 5px;margin-left:4px;border-radius:8px;background:var(--bad);color:#fff;font-size:11px;text-align:center}
 .badge:empty{display:none}
-main{padding:14px;max-width:1400px}
+main{padding:14px;max-width:1100px}
 button,select,input,textarea{font:inherit;color:inherit;background:var(--card);border:1px solid var(--bd);border-radius:4px;padding:3px 8px}
-button{cursor:pointer}button:hover{border-color:var(--acc)}
+button{cursor:pointer}button:hover{border-color:var(--acc)}button:disabled{opacity:.5;cursor:default}
 button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
 button.dng{color:var(--bad)}
-button.sel{background:var(--acc);color:#fff;border-color:var(--acc)}
-textarea{width:100%;min-height:90px;resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:12px}
-input[type=text],input:not([type]){width:100%}
+button.armed{background:var(--bad);border-color:var(--bad);color:#fff}
+button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+textarea{width:100%;min-height:60px;resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+input[type=text]{width:100%}
 table{border-collapse:collapse;width:100%}
 th,td{text-align:left;padding:4px 8px;border-bottom:1px solid var(--bd);vertical-align:top}
 th{color:var(--mut);font-weight:500;font-size:12px}
-tr.click{cursor:pointer}tr.click:hover,tr.cur{background:var(--hl)}
 .card{background:var(--card);border:1px solid var(--bd);border-radius:6px;padding:10px 12px;margin-bottom:10px}
 .card h3{margin:0 0 4px;font-size:14px}
+.card.nextc{border-color:var(--ok);box-shadow:inset 3px 0 0 var(--ok)}
+.card.focus,.mem.focus{outline:2px solid var(--acc)}
+.banner{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .meta{color:var(--mut);font-size:12px}
-pre{white-space:pre-wrap;word-break:break-word;margin:4px 0;font:12px/1.4 ui-monospace,Consolas,monospace}
-.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+pre,.mbody{white-space:pre-wrap;word-break:break-word;margin:4px 0;font:12px/1.4 ui-monospace,Consolas,monospace}
+.mono{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
 .tile{background:var(--card);border:1px solid var(--bd);border-radius:6px;padding:10px}
 .tile .n{font-size:22px;font-weight:600}
 .split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
-@media (max-width:900px){.split{grid-template-columns:1fr}}
+@media (max-width:800px){.split{grid-template-columns:1fr}}
 .bar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
-.bar input{width:220px}
-.grid{display:grid;grid-template-columns:90px 1fr;gap:6px 10px;align-items:center}
-.grid label{color:var(--mut)}
-.row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.bar input[type=text]{width:240px}
+.row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px}
+.sh{display:flex;gap:8px;align-items:baseline;cursor:pointer}
+.sh .n{color:var(--mut);font-variant-numeric:tabular-nums}
+.sh h3{flex:1}
+.pill{display:inline-block;padding:0 6px;margin-left:4px;border-radius:9px;font-size:11px;border:1px solid var(--bd);color:var(--mut);white-space:nowrap}
+.pill.ok{color:var(--ok);border-color:var(--ok)}.pill.warn{color:var(--warn);border-color:var(--warn)}.pill.bad{color:var(--bad);border-color:var(--bad)}.pill.acc{color:var(--acc);border-color:var(--acc)}
 .st{padding:0 6px;border-radius:3px;font-size:11px;border:1px solid var(--bd)}
-.st-active{color:var(--ok)}.st-proposed{color:var(--acc)}.st-stale,.st-paused{color:var(--warn)}.st-conflict,.st-off{color:var(--bad)}.st-superseded,.st-archived,.st-ended{color:var(--mut)}
-#err{position:fixed;bottom:60px;right:12px;max-width:480px;background:var(--bad);color:#fff;padding:8px 12px;border-radius:6px;display:none;cursor:pointer}
-.empty{color:var(--mut);padding:20px 0}
+.st-active{color:var(--ok)}.st-proposed{color:var(--acc)}.st-stale{color:var(--warn)}.st-conflict{color:var(--bad)}.st-superseded,.st-archived{color:var(--mut)}
+.mem{padding:8px 0}.mem+.mem{border-top:1px solid var(--bd)}
+.mem .mbody{font-family:inherit;font-size:13px;max-height:9em;overflow:auto}
+.nexttog{display:flex;gap:4px;align-items:center;font-size:12px;white-space:nowrap;cursor:pointer}
+#toast{position:fixed;bottom:14px;right:12px;max-width:480px;background:var(--bad);color:#fff;padding:8px 12px;border-radius:6px;display:none;cursor:pointer;z-index:5}
+#toast.ok{background:var(--ok)}
+.empty{color:var(--mut);padding:12px 0}
 ul{margin:4px 0;padding-left:18px}
-#selbar{position:fixed;bottom:0;left:0;right:0;display:flex;gap:8px;align-items:center;padding:8px 14px;background:var(--card);border-top:1px solid var(--bd);z-index:3}
-#selbar[hidden]{display:none}#selbar input{width:220px}
-main{padding-bottom:70px}
-.next{background:var(--ok)}
 td.ev div{max-height:7em;overflow:auto;white-space:pre-wrap;word-break:break-word;font:12px/1.4 ui-monospace,Consolas,monospace}
-details summary{cursor:pointer;color:var(--mut);margin-top:6px}
+details>summary{cursor:pointer;color:var(--mut);margin-top:6px}
+h2{font-size:13px;margin:18px 0 6px;text-transform:uppercase;letter-spacing:.04em}
 h4{margin:10px 0 4px;font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
+label.mode{display:block;padding:6px 0}
+label.mode .meta{display:block;margin-left:22px}
+.grid{display:grid;grid-template-columns:80px 1fr;gap:6px 10px;align-items:start}
+.grid>span{color:var(--mut);padding-top:3px}
 </style>
 </head>
 <body>
@@ -63,32 +75,42 @@ h4{margin:10px 0 4px;font-size:12px;color:var(--mut);text-transform:uppercase;le
   <nav id="tabs"></nav>
 </header>
 <main id="main"></main>
-<div id="selbar" hidden></div>
-<div id="err" title="Click to dismiss"></div>
+<div id="toast" title="Click to dismiss"></div>
 <script>
 'use strict';
+// No confirm()/alert()/prompt(): they are suppressed in the VS Code webview. Destructive actions use twoStep().
 const TOKEN = new URLSearchParams(location.search).get('t') || '';
-const TYPES = ['fact','decision','constraint','lesson','requirement','preference','warning','idea','task','architecture'];
-const STATUSES = ['proposed','active','stale','conflict','superseded','archived'];
-const SCOPES = ['user','project','branch','session'];
-const TABS = [['overview','Overview'],['sessions','Sessions'],['memories','Memories'],['review','Review'],['checkpoints','Checkpoints'],['summaries','Summaries'],['packs','Packs'],['retrievals','Retrievals'],['settings','Settings']];
+const TYPES = ['architecture','decision','constraint','requirement','lesson','warning','fact','preference','idea','task'];
+const TABS = [['sessions','Sessions'],['knowledge','Knowledge'],['messages','Messages'],['project','Project']];
+const MODES = [
+  ['off', 'UAC does nothing here: no context is loaded and nothing is recorded.'],
+  ['manual', "Project knowledge and this branch's latest session card load at start; nothing is recorded until you type #uac on."],
+  ['automatic', 'Knowledge loads at start, and every session is recorded and saved into a session card automatically.'],
+];
 const main = document.getElementById('main');
 let project = localStorage.getItem('uac.project') || '';
-let tab = 'overview';
-let seq = 0;          // render generation; stale async renders bail out
-let openId = null;    // memory open in the editor
-let openSess = null;  // session open in the detail panel
-let pollFn = null;    // refreshes the sessions list only (keeps the detail panel intact)
-const picked = new Set(); // ids (memory/summary/checkpoint) chosen for a new pack; shared across tabs
-// #tab or #tab/<id> deep links (#memories/<id>, #sessions/<id>)
+let projects = [];
+let tab = 'sessions';
+let seq = 0;             // render generation; stale async renders bail out
+let pollFn = null;       // sessions tab refresher
+let focusMem = null;     // #memories/<id>
+let focusSess = null;    // #sessions/<id>
+const openCards = new Set();   // expanded session cards survive polling
+const openEvents = new Set();  // expanded raw-events lists
+const dcache = new Map();      // session id -> /api/sessions/:id detail
+const sf = { branch: '' };
+const kf = { q: '', all: false };
+
 function readHash() {
-  const [t, id] = location.hash.slice(1).split('/');
-  if (TABS.some(([k]) => k === t)) tab = t;
-  if (id && t === 'memories') openId = decodeURIComponent(id);
-  if (id && t === 'sessions') openSess = decodeURIComponent(id);
+  const [t, raw] = location.hash.slice(1).split('/');
+  const id = raw && decodeURIComponent(raw);
+  const k = t === 'memories' || t === 'review' ? 'knowledge' : t;
+  if (TABS.some(([x]) => x === k)) tab = k;
+  focusMem = t === 'memories' && id ? id : null;
+  focusSess = t === 'sessions' && id ? id : null;
+  if (focusSess) openCards.add(focusSess);
 }
 readHash();
-const mf = { type: '', status: '', q: '' };
 
 // Build DOM safely: strings become text nodes, never HTML.
 function h(tag, props, ...kids) {
@@ -102,8 +124,8 @@ function h(tag, props, ...kids) {
   for (const c of kids.flat(Infinity)) if (c != null && c !== false) e.append(c instanceof Node ? c : String(c));
   return e;
 }
-function showErr(msg) { const el = document.getElementById('err'); el.textContent = msg; el.style.display = 'block'; clearTimeout(showErr.t); showErr.t = setTimeout(() => el.style.display = 'none', 8000); }
-document.getElementById('err').onclick = (e) => e.target.style.display = 'none';
+function toast(msg, ok) { const el = document.getElementById('toast'); el.textContent = msg; el.className = ok ? 'ok' : ''; el.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => el.style.display = 'none', ok ? 3000 : 8000); }
+document.getElementById('toast').onclick = (e) => e.target.style.display = 'none';
 
 async function api(path, method = 'GET', body) {
   const opt = { method, headers: { 'x-uac-token': TOKEN } };
@@ -113,326 +135,401 @@ async function api(path, method = 'GET', body) {
   if (!r.ok) throw new Error(`${method} ${path.split('?')[0]}: ${(data && (data.error || data.message)) || r.status + ' ' + r.statusText}`);
   return data;
 }
-const P = (path, params = {}) => path + '?' + new URLSearchParams(Object.entries({ project, ...params }).filter(([, v]) => v !== ''));
-const fmt = (t) => { if (t == null || t === '') return ''; const n = Number(t); const d = new Date(isNaN(n) ? t : n < 1e12 ? n * 1000 : n); return isNaN(d) ? String(t) : d.toLocaleString(); };
+const P = (path, params = {}) => path + '?' + new URLSearchParams(Object.entries({ project, ...params }).filter(([, v]) => v !== '' && v != null));
+const enc = encodeURIComponent;
+const toDate = (t) => { const n = Number(t); return new Date(isNaN(n) ? t : n < 1e12 ? n * 1000 : n); };
+const fmt = (t) => { if (t == null || t === '') return ''; const d = toDate(t); return isNaN(d) ? String(t) : d.toLocaleString(); };
+function ago(t) {
+  if (t == null || t === '') return '';
+  const d = toDate(t); if (isNaN(d)) return String(t);
+  const s = (Date.now() - d) / 1000;
+  return s < 60 ? 'just now' : s < 3600 ? Math.round(s / 60) + 'm ago' : s < 86400 ? Math.round(s / 3600) + 'h ago' : s < 7 * 86400 ? Math.round(s / 86400) + 'd ago' : d.toLocaleDateString();
+}
 const arr = (v) => { if (Array.isArray(v)) return v; if (typeof v === 'string' && /^\s*[\[{]/.test(v)) { try { const p = JSON.parse(v); return Array.isArray(p) ? p : [p]; } catch {} } return v == null || v === '' ? [] : [v]; };
 const str = (v) => v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
-const st = (s) => h('span', { class: 'st st-' + s }, s);
+const st = (s) => s ? h('span', { class: 'st st-' + s }, s) : null;
+const pill = (text, cls = '', title) => h('span', { class: 'pill ' + cls, title }, text);
 const empty = (msg) => h('div', { class: 'empty' }, msg);
 const sel = (value, opts, props = {}) => h('select', props, opts.map(o => { const [v, l] = Array.isArray(o) ? o : [o, o]; return h('option', { value: v, selected: v === value }, l); }));
-function act(fn) { return async (e) => { if (e) e.stopPropagation(); const b = e && e.currentTarget; if (b) b.disabled = true; try { await fn(e); } catch (err) { showErr(err.message); } finally { if (b) b.disabled = false; } }; }
-function list(label, v) { const a = arr(v); return a.length ? [h('h4', null, label), h('ul', null, a.map(x => h('li', null, str(x))))] : null; }
-const memLink = (id, label) => h('a', { href: '#memories/' + encodeURIComponent(id) }, label ?? str(id));
-const idLink = (id) => /^[sc]-/.test(str(id)) ? str(id) : memLink(id);
+function act(fn) { return async (e) => { if (e) e.stopPropagation(); const b = e && e.currentTarget; if (b) b.disabled = true; try { await fn(e); } catch (err) { toast(err.message); } finally { if (b) b.disabled = false; } }; }
+const list = (label, v) => { const a = arr(v); return a.length ? [h('h4', null, label), h('ul', null, a.map(x => h('li', null, str(x))))] : null; };
+const text = (label, v) => v ? [h('h4', null, label), h('pre', null, str(v))] : null;
+// native replaceChildren stringifies arrays and null; h() flattens, so mirror that
+const fill = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter(k => k != null && k !== false));
+const sTitle = (s) => s.card?.title || s.title || '(untitled session)';
 
-// ---------- pack selection ----------
-const packName = h('input', { type: 'text', placeholder: 'Pack name (optional)' });
-function pickBox(id) {
-  return h('input', { type: 'checkbox', class: 'pk', 'data-id': id, checked: picked.has(id), title: 'Include in a pack',
-    onclick: (e) => e.stopPropagation(), onchange: (e) => { e.target.checked ? picked.add(id) : picked.delete(id); syncPicks(); } });
+// "Delete" -> "Confirm delete (…)" -> action. Reverts after 4s. confirmLabel may be an async function.
+function twoStep(label, confirmLabel, onConfirm, cls = 'dng') {
+  const b = h('button', { class: cls });
+  let armed = false, t;
+  const reset = () => { armed = false; b.textContent = label; b.className = cls; };
+  reset();
+  b.addEventListener('click', act(async () => {
+    if (!armed) {
+      let l = 'Confirm';
+      try { l = typeof confirmLabel === 'function' ? await confirmLabel() : confirmLabel; } catch {}
+      armed = true; b.textContent = l; b.className = 'armed'; t = setTimeout(reset, 4000); return;
+    }
+    clearTimeout(t); reset(); await onConfirm();
+  }));
+  return b;
 }
-const selAll = (box) => h('button', { onclick: () => { box.querySelectorAll('input.pk').forEach(c => picked.add(c.dataset.id)); syncPicks(); } }, 'Select all visible');
-function syncPicks() {
-  document.querySelectorAll('input.pk').forEach(c => c.checked = picked.has(c.dataset.id));
-  const bar = document.getElementById('selbar');
-  bar.hidden = !picked.size;
-  const create = (next) => act(async () => {
-    await api(P('/api/packs'), 'POST', { name: packName.value.trim() || 'selection ' + new Date().toLocaleString(), ids: [...picked], next });
-    picked.clear(); packName.value = ''; syncPicks(); go('packs');
-  });
-  bar.replaceChildren(h('b', null, `${picked.size} selected`), h('button', { onclick: () => { picked.clear(); syncPicks(); } }, 'Clear'), packName,
-    h('button', { onclick: create(false) }, 'Create pack'), h('button', { class: 'pri', onclick: create(true) }, 'Create pack + use for next session'));
-}
-function text(label, v) { return v ? [h('h4', null, label), h('pre', null, str(v))] : null; }
 
 // ---------- chrome ----------
 function drawTabs() {
   const nav = document.getElementById('tabs');
   const badge = nav.querySelector('#rbadge')?.textContent || '';
-  nav.replaceChildren(...TABS.map(([id, label]) => h('button', { class: id === tab ? 'on' : '', onclick: () => go(id) }, label, id === 'review' ? h('span', { class: 'badge', id: 'rbadge' }, badge) : null)));
+  nav.replaceChildren(...TABS.map(([id, label]) => h('button', { class: id === tab ? 'on' : '', onclick: () => go(id) }, label, id === 'knowledge' ? h('span', { class: 'badge', id: 'rbadge', title: 'Needs your decision' }, badge) : null)));
 }
-async function updateBadge() {
+async function updateBadge(r) {
   if (!project) return;
-  try { const r = await api(P('/api/review')); const n = (r.proposed || []).length + (r.conflicts || []).length; document.getElementById('rbadge').textContent = n || ''; } catch {}
+  try { r = r || await api(P('/api/review')); document.getElementById('rbadge').textContent = (arr(r.proposed).length + arr(r.conflicts).length) || ''; } catch {}
 }
-const setHash = () => { const sub = tab === 'memories' ? openId : tab === 'sessions' ? openSess : null; history.replaceState(null, '', location.search + '#' + tab + (sub ? '/' + encodeURIComponent(sub) : '')); };
-function go(id) { tab = id; setHash(); drawTabs(); render(); }
+function setHash() {
+  const sub = tab === 'knowledge' && focusMem ? 'memories/' + enc(focusMem) : tab === 'sessions' && focusSess ? 'sessions/' + enc(focusSess) : tab;
+  history.replaceState(null, '', location.search + '#' + sub);
+}
+function go(id) { tab = id; focusMem = focusSess = null; setHash(); drawTabs(); render(); }
 window.addEventListener('hashchange', () => { readHash(); drawTabs(); render(); });
 async function render() {
   const my = ++seq;
-  if (!project) { main.replaceChildren(empty('No projects yet. Start a session with UAC capture on.')); return; }
+  pollFn = null;
+  if (!project) { main.replaceChildren(empty('No projects yet. Start a session in a project with UAC installed.')); return; }
   const out = h('div');
   try { await VIEWS[tab](out, () => my === seq); } catch (e) { out.replaceChildren(empty(e.message)); }
-  if (my === seq) { main.replaceChildren(out); syncPicks(); }
+  if (my === seq) main.replaceChildren(out);
+  const f = focusMem ? document.getElementById('m-' + focusMem) : focusSess ? document.getElementById('s-' + focusSess) : null;
+  if (f && my === seq) f.scrollIntoView({ block: 'center' });
 }
 async function loadProjects() {
-  const ps = await api('/api/projects');
+  projects = await api('/api/projects');
   const pick = document.getElementById('proj');
-  if (!ps.some(p => p.id === project)) project = ps[0]?.id || '';
-  pick.replaceChildren(...ps.map(p => h('option', { value: p.id, selected: p.id === project, title: p.root }, p.name || p.root)));
-  pick.onchange = () => { project = pick.value; localStorage.setItem('uac.project', project); openId = openSess = null; picked.clear(); setHash(); updateBadge(); render(); };
+  if (!projects.some(p => p.id === project)) project = projects[0]?.id || '';
+  pick.replaceChildren(...projects.map(p => h('option', { value: p.id, selected: p.id === project, title: p.root }, p.name || p.root)));
+  pick.onchange = () => { project = pick.value; localStorage.setItem('uac.project', project); openCards.clear(); dcache.clear(); sf.branch = ''; go(tab); updateBadge(); };
 }
 
 // ---------- views ----------
 const VIEWS = {
-  async overview(out) {
-    const [x, nx, ps] = await Promise.all([api(P('/api/health')), api(P('/api/next')).catch(() => ({})), api(P('/api/packs')).catch(() => [])]);
-    const c = x.counts || {};
-    const np = nx.pack && (ps.find(p => p.id === nx.pack) || { name: nx.pack });
-    const tile = (label, n, cls) => h('div', { class: 'tile' }, h('div', { class: 'n ' + (cls || '') }, n ?? '–'), h('div', { class: 'meta' }, label));
-    const ratio = x.raw_chars && x.pack_chars ? (x.raw_chars / x.pack_chars).toFixed(1) + '×' : '–';
-    out.append(
-      h('div', { class: 'card' }, 'Next session will load: ', h('b', null, np ? np.name || np.id : 'default (ask)'), ' · ', h('a', { href: '#packs' }, 'change')),
-      h('h4', null, 'Memories'),
-      h('div', { class: 'tiles' }, STATUSES.map(s => tile(s, c[s] ?? 0, 'st-' + s))),
-      h('h4', null, 'Activity'),
-      h('div', { class: 'tiles' },
-        tile('sessions', x.sessions), tile('events', x.events),
-        tile('avg pack tokens', x.avg_pack_tokens != null ? Math.round(x.avg_pack_tokens) : null),
-        tile('raw chars', x.raw_chars), tile('pack chars', x.pack_chars), tile('compression ratio', ratio)));
-  },
-
   async sessions(out, live) {
-    const listBox = h('div'), detail = h('div');
-    const load = async () => {
-      const ss = await api(P('/api/sessions'));
+    const banner = h('div', { class: 'card banner' }), bar = h('div', { class: 'bar' }), listBox = h('div');
+    out.append(banner, bar, listBox);
+    let sig = '';
+    const setNext = (ids) => act(async () => { await api(P('/api/next'), 'PUT', { sessions: ids }); await load(true); });
+    const load = async (force) => {
+      const [ss, nx] = await Promise.all([api(P('/api/sessions')), api(P('/api/next')).catch(() => ({}))]);
       if (!live()) return;
-      if (!ss.length) return listBox.replaceChildren(empty('No sessions.'));
-      ss.sort((a, b) => str(a.agent).localeCompare(str(b.agent)) || str(b.started_at).localeCompare(str(a.started_at)));
-      const capBtns = (s) => h('span', { class: 'row', style: 'margin:0' }, ['on', 'paused', 'off'].map(state =>
-        h('button', { class: s.capture === state ? 'sel' : '', onclick: act(async () => { await api(`/api/sessions/${encodeURIComponent(s.id)}/capture`, 'PUT', { state }); await load(); }) }, state)));
-      const del = (s) => h('button', { class: 'dng', onclick: act(async () => {
-        if (!confirm(`Delete session ${s.id} and its ${s.events ?? ''} events? This cannot be undone.`)) return;
-        await api(`/api/sessions/${encodeURIComponent(s.id)}`, 'DELETE');
-        if (openSess === s.id) { openSess = null; setHash(); detail.replaceChildren(); }
-        await load();
-      }) }, 'Delete');
-      listBox.replaceChildren(h('table', null,
-        h('tr', null, ['Agent', 'Title', 'Branch', 'Status', 'Started', 'Ended', 'Events', 'Unsaved', 'Capture', ''].map(t => h('th', null, t))),
-        ss.map(s => h('tr', { class: 'click' + (s.id === openSess ? ' cur' : ''), onclick: () => { openSess = s.id; setHash(); load(); openSession(detail, load); } },
-          h('td', null, s.agent), h('td', null, s.title || h('span', { class: 'meta' }, s.id)), h('td', null, s.branch),
-          h('td', null, st(s.status)), h('td', null, fmt(s.started_at)), h('td', null, fmt(s.ended_at)),
-          h('td', null, s.events), h('td', null, s.unsaved), h('td', null, capBtns(s)), h('td', null, del(s))))));
+      // never clobber an armed two-step button or a half-typed input during a background poll
+      if (!force && main.querySelector('button.armed, input:focus, textarea:focus')) return;
+      const s2 = JSON.stringify([ss, nx, sf.branch]);
+      if (!force && s2 === sig) return;
+      sig = s2;
+      ss.forEach((s, i) => { if (s.n == null) s.n = i + 1; });
+      const nextIds = Array.isArray(nx.sessions) ? nx.sessions : ss.filter(s => s.next).map(s => s.id);
+      const chosen = nextIds.map(id => ss.find(s => s.id === id) || { id, n: '?', title: id });
+      fill(banner, ...(chosen.length
+        ? ['Next session will continue from: ', ...chosen.map((s, i) => [i ? ', ' : '', h('b', null, `#${s.n} ${sTitle(s)}`)]).flat(), h('button', { onclick: setNext([]) }, 'clear')]
+        : [h('span', null, h('b', null, 'Default: '), 'the next session continues from the latest session on the same branch.'), h('span', { class: 'meta' }, 'Tick "Continue from this" on any card to choose instead.')]));
+      const branches = [...new Set(ss.map(s => s.branch).filter(Boolean))].sort();
+      // server only removes empty sessions older than 30 min (a live session may not have events yet)
+      const emptyN = ss.filter(s => !Number(s.events) && !s.card && !Number(s.memories_created) && Date.now() - toDate(s.started_at) > 30 * 60e3).length;
+      fill(bar, 
+        sel(sf.branch, [['', 'All branches'], ...branches.map(b => [b, 'Branch ' + b])], { onchange: (e) => { sf.branch = e.target.value; load(true).catch(err => toast(err.message)); } }),
+        emptyN ? twoStep(`Delete empty sessions (${emptyN})`, `Confirm delete ${emptyN} empty session${emptyN > 1 ? 's' : ''}`, async () => {
+          const r = await api(P('/api/sessions/cleanup'), 'POST', { empty: true });
+          toast(`Deleted ${r?.deleted ?? 0} empty session(s)`, true); await load(true);
+        }) : null,
+        h('span', { class: 'meta' }, `${ss.length} session${ss.length === 1 ? '' : 's'}`));
+      const shown = ss.filter(s => !sf.branch || s.branch === sf.branch);
+      listBox.replaceChildren(...(shown.length ? shown.map(s => sessionCard(s, nextIds, load)) : [empty('No sessions yet.')]));
     };
-    pollFn = () => load().catch(() => {});
-    out.append(listBox, detail);
-    await load();
-    if (openSess) openSession(detail, load);
+    pollFn = () => { load().catch(() => {}); updateBadge(); };
+    await load(true);
   },
 
-  async memories(out, live) {
-    const listBox = h('div'), detail = h('div');
-    const load = async () => {
-      const ms = await api(P('/api/memories', mf));
-      if (!live()) return;
-      listBox.replaceChildren(ms.length ? h('table', null,
-        h('tr', null, ['', 'Type', 'Title', 'Status', 'Imp', 'Updated'].map(t => h('th', null, t))),
-        ms.map(m => h('tr', { class: 'click' + (m.id === openId ? ' cur' : ''), onclick: (e) => { openId = m.id; setHash(); openMemory(detail, load); listBox.querySelectorAll('tr.cur').forEach(r => r.classList.remove('cur')); e.currentTarget.classList.add('cur'); } },
-          h('td', null, pickBox(m.id)), h('td', null, m.type), h('td', null, m.pinned ? '★ ' : '', m.title), h('td', null, st(m.status)),
-          h('td', null, m.importance != null ? Number(m.importance).toFixed(2) : ''), h('td', null, fmt(m.updated_at))))) : empty('No memories match.'));
-    };
+  async knowledge(out, live) {
+    const [rv, auto, ms] = await Promise.all([
+      api(P('/api/review')),
+      api(P('/api/memories', { auto: '1' })).catch(() => []),
+      api(P('/api/memories', { q: kf.q })),
+    ]);
+    if (!live()) return;
+    updateBadge(rv);
+    const reload = () => render();
+    const proposed = arr(rv.proposed), conflicts = arr(rv.conflicts);
+
+    // 1. needs your decision
+    out.append(h('h2', null, `Needs your decision (${proposed.length + conflicts.length})`));
+    if (!proposed.length && !conflicts.length) out.append(empty('Nothing waiting. Confident, non-conflicting items are accepted automatically.'));
+    proposed.forEach(m => out.append(reviewCard(m, null, reload)));
+    conflicts.forEach(({ memory, other }) => out.append(h('div', { class: 'split' },
+      reviewCard(memory, 'New (conflicts with the existing memory)', reload), other ? memCard(other, 'Existing') : empty('(other side missing)'))));
+
+    // 2. recently auto-accepted
+    out.append(h('h2', null, `Recently auto-accepted (${auto.length})`));
+    if (!auto.length) out.append(empty('Nothing accepted automatically in the last 7 days.'));
+    else out.append(h('div', { class: 'card' }, auto.map(m => h('div', { class: 'mem' },
+      h('div', null, h('b', null, m.title || '(untitled)'), pill(m.type), m.source_model ? pill('by ' + m.source_model) : null),
+      h('div', { class: 'mbody' }, str(m.body)),
+      h('div', { class: 'meta' }, 'accepted by ', m.resolved_by || '?', m.resolved_at ? ' · ' + ago(m.resolved_at) : ''),
+      h('div', { class: 'row' },
+        h('button', { title: 'Archive it: it stops being loaded', onclick: act(async () => { await api(`/api/memories/${enc(m.id)}`, 'PUT', { status: 'archived' }); reload(); }) }, 'Undo'),
+        twoStep('Wrong', 'Confirm: mark as wrong', async () => { await api(`/api/memories/${enc(m.id)}`, 'PUT', { status: 'superseded' }); reload(); }))))));
+
+    // 3. project knowledge, grouped by type
     let t;
-    const q = h('input', { type: 'text', placeholder: 'Search text…', value: mf.q, oninput: (e) => { clearTimeout(t); t = setTimeout(() => { mf.q = e.target.value; load().catch(err => showErr(err.message)); }, 250); } });
-    const f = (key, opts) => sel(mf[key], [['', 'any ' + key], ...opts], { onchange: (e) => { mf[key] = e.target.value; load().catch(err => showErr(err.message)); } });
-    out.append(h('div', { class: 'bar' }, q, f('type', TYPES), f('status', STATUSES), selAll(listBox)), h('div', { class: 'split' }, listBox, detail));
-    await load();
-    if (openId) openMemory(detail, load);
+    const q = h('input', { type: 'text', placeholder: 'Search knowledge…', value: kf.q, oninput: (e) => { clearTimeout(t); t = setTimeout(() => { kf.q = e.target.value; render(); }, 300); } });
+    const allBox = h('label', { class: 'meta' }, h('input', { type: 'checkbox', checked: kf.all, onchange: (e) => { kf.all = e.target.checked; render(); } }), ' show invalidated / archived');
+    const rows = ms.filter(m => m.status !== 'proposed' && m.status !== 'conflict' && (kf.all || (m.status !== 'superseded' && m.status !== 'archived')));
+    out.append(h('h2', null, `Project knowledge (${rows.length})`), h('div', { class: 'bar' }, q, allBox));
+    if (focusMem && !ms.some(m => m.id === focusMem)) {
+      try { const m = await api(`/api/memories/${enc(focusMem)}`); out.append(h('h4', null, 'Linked memory'), h('div', { class: 'card' }, memRow(m, reload))); } catch {}
+    }
+    if (!rows.length) out.append(empty(kf.q ? 'Nothing matches.' : 'No project knowledge yet. Run /uac init in a session to seed it.'));
+    const types = [...new Set([...TYPES, ...rows.map(m => m.type)])];
+    for (const ty of types) {
+      const g = rows.filter(m => m.type === ty);
+      if (g.length) out.append(h('h4', null, `${ty} (${g.length})`), h('div', { class: 'card' }, g.map(m => memRow(m, reload))));
+    }
+    if (q.value) queueMicrotask(() => { q.focus(); q.setSelectionRange(q.value.length, q.value.length); });
   },
 
-  async review(out) {
-    const r = await api(P('/api/review'));
-    const proposed = r.proposed || [], conflicts = r.conflicts || [];
-    const b = document.getElementById('rbadge'); if (b) b.textContent = (proposed.length + conflicts.length) || '';
-    out.append(h('h4', null, `Proposed (${proposed.length})`));
-    if (!proposed.length) out.append(empty('Nothing awaiting review.'));
-    proposed.forEach(m => out.append(reviewCard(m)));
-    out.append(h('h4', null, `Conflicts (${conflicts.length})`));
-    if (!conflicts.length) out.append(empty('No conflicts.'));
-    conflicts.forEach(({ memory, other }) => out.append(h('div', { class: 'split' }, reviewCard(memory, 'New / conflicting'), other ? memCard(other, 'Existing') : empty('(other side missing)'))));
+  async messages(out, live) {
+    const [msgs, ss] = await Promise.all([api(P('/api/messages')), api(P('/api/sessions')).catch(() => [])]);
+    if (!live()) return;
+    const branches = [...new Set(ss.map(s => s.branch).filter(Boolean))].sort();
+    const to = sel('all', [['all', 'Everyone'], ...branches.map(b => ['branch:' + b, 'Branch ' + b]),
+      ...ss.slice(0, 30).map((s, i) => ['session:' + s.id, `Session #${s.n ?? i + 1} ${sTitle(s)}`])]);
+    const ta = h('textarea', { rows: 3, placeholder: 'Note for other agents. It is shown once to each matching session on its next prompt.' });
+    out.append(h('div', { class: 'card' }, h('h3', null, 'New message'), ta,
+      h('div', { class: 'row' }, h('span', { class: 'meta' }, 'To'), to, h('button', { class: 'pri', onclick: act(async () => {
+        if (!ta.value.trim()) return toast('Type a message first');
+        await api(P('/api/messages'), 'POST', { text: ta.value.trim(), to: to.value }); toast('Sent', true); render();
+      }) }, 'Send'))));
+    const sorted = [...msgs].sort((a, b) => toDate(b.created_at) - toDate(a.created_at));
+    out.append(h('h2', null, `Messages (${sorted.length})`));
+    if (!sorted.length) out.append(empty('No messages yet.'));
+    sorted.forEach(m => out.append(h('div', { class: 'card' },
+      h('div', { class: 'meta' }, h('b', null, [m.from_agent || 'dashboard', m.from_branch && '@' + m.from_branch].filter(Boolean).join(' ')), ' → ', str(m.to || 'all'),
+        ' · ', ago(m.created_at), m.reads != null ? ` · read by ${Array.isArray(m.reads) ? m.reads.length : m.reads}` : ''),
+      h('pre', null, str(m.text)))));
   },
 
-  async checkpoints(out) {
-    const cs = await api(P('/api/checkpoints'));
-    if (!cs.length) return out.append(empty('No checkpoints.'));
-    out.append(h('div', { class: 'bar' }, selAll(out)), ...cs.map(cpCard));
-  },
+  async project(out, live) {
+    const [x, s] = await Promise.all([api(P('/api/health')), api(P('/api/settings')).catch(() => ({})), loadProjects()]);
+    if (!live()) return;
+    const cur = projects.find(p => p.id === project) || {};
+    const mode = s.mode ?? cur.mode ?? null;
+    const saved = h('span', { class: 'meta' });
+    out.append(h('div', { class: 'card' }, h('h3', null, 'Mode for ', cur.name || cur.root || project),
+      mode == null ? h('div', { class: 'meta' }, 'Not chosen yet: the next session asks once (default manual).') : null,
+      MODES.map(([m, desc]) => h('label', { class: 'mode' },
+        h('input', { type: 'radio', name: 'mode', value: m, checked: m === mode, onchange: act(async () => { await api(P('/api/settings'), 'PUT', { mode: m }); saved.textContent = 'Saved: ' + m; }) }),
+        ' ', h('b', null, m), h('span', { class: 'meta' }, desc))), saved));
 
-  async summaries(out) {
-    const ss = await api(P('/api/summaries'));
-    if (!ss.length) return out.append(empty('No summaries.'));
-    out.append(h('div', { class: 'bar' }, selAll(out)), ...ss.map(sumCard));
-  },
+    const c = x.counts || {};
+    const tile = (label, n) => h('div', { class: 'tile' }, h('div', { class: 'n' }, n ?? '–'), h('div', { class: 'meta' }, label));
+    out.append(h('h2', null, 'Health'), h('div', { class: 'tiles' },
+      tile('sessions', x.sessions), tile('raw events', x.events),
+      ['active', 'proposed', 'conflict', 'stale', 'superseded', 'archived'].map(k => tile(k + ' memories', c[k] ?? 0))));
+    const db = x.db_path ?? x.db ?? x.path;
+    if (db) out.append(h('div', { class: 'meta', style: 'margin-top:8px' }, 'Database: ', h('span', { class: 'mono' }, str(db))));
 
-  async packs(out) {
-    const ps = await api(P('/api/packs'));
-    const setNext = (pack) => act(async () => { await api(P('/api/next'), 'PUT', { pack }); render(); });
-    out.append(h('div', { class: 'bar' }, h('button', { onclick: setNext(null), disabled: !ps.some(p => p.next) }, 'Clear next-session choice'),
-      h('span', { class: 'meta' }, 'Tick memories, summaries or checkpoints in their tabs to build a new pack.')));
-    if (!ps.length) return out.append(empty('No packs.'));
-    ps.forEach(p => {
-      const ids = arr(p.item_ids ?? p.items).map(i => typeof i === 'object' ? i.item_id : i);
-      out.append(h('div', { class: 'card' },
-        h('h3', null, p.name || p.id, p.next ? [' ', h('span', { class: 'badge next' }, 'NEXT SESSION')] : null),
-        h('div', { class: 'meta' }, [p.id, ids.length + ' items', p.budget_tokens ? p.budget_tokens + ' token budget' : '', p.created_by_session, fmt(p.created_at)].filter(Boolean).join(' · ')),
-        text('Goal', p.goal),
-        h('div', { class: 'row' },
-          h('button', { class: 'pri', onclick: setNext(p.id), disabled: !!p.next }, 'Use for next session'),
-          h('button', { class: 'dng', onclick: act(async () => { if (!confirm(`Delete pack ${p.name || p.id}?`)) return; await api(`/api/packs/${encodeURIComponent(p.id)}`, 'DELETE'); render(); }) }, 'Delete')),
-        h('details', null, h('summary', null, `${ids.length} items`), h('ul', null, ids.map(id => h('li', null, idLink(id)))))));
-    });
-  },
+    out.append(h('h2', null, `Projects (${projects.length})`), h('table', null,
+      h('tr', null, ['Project', 'Mode', 'Sessions', 'Memories', ''].map(t => h('th', null, t))),
+      projects.map(p => {
+        const others = projects.filter(o => o.id !== p.id);
+        const target = sel('', [['', 'Merge into…'], ...others.map(o => [o.id, o.name || o.root])]);
+        const merge = twoStep('Merge', () => {
+          if (!target.value) throw new Error('pick a target');
+          const o = others.find(o => o.id === target.value);
+          return `Confirm merge into ${o?.name || target.value}`;
+        }, async () => {
+          if (!target.value) return toast('Pick a project to merge into first');
+          await api('/api/projects/merge', 'POST', { from: p.id, into: target.value });
+          if (project === p.id) project = target.value;
+          toast('Merged', true); render();
+        });
+        const del = twoStep('Delete project', `Confirm delete (${p.sessions ?? '?'} sessions, ${p.memories ?? '?'} memories)`, async () => {
+          await api(`/api/projects/${enc(p.id)}`, 'DELETE'); toast('Project deleted', true); render();
+        });
+        return h('tr', null, h('td', null, h('b', null, p.name || p.id), h('div', { class: 'meta mono' }, p.root || ''), p.git_remote ? h('div', { class: 'meta mono' }, p.git_remote) : null),
+          h('td', null, p.mode || '–'), h('td', null, p.sessions ?? ''), h('td', null, p.memories ?? ''),
+          h('td', null, others.length ? h('div', { class: 'row', style: 'margin:0' }, target, merge) : null, h('div', { class: 'row' }, del)));
+      })));
 
-  async retrievals(out) {
-    const rs = await api(P('/api/retrievals'));
-    if (!rs.length) return out.append(empty('No retrievals logged.'));
-    rs.forEach(r => {
-      const ids = arr(r.item_ids);
-      let reasons = r.reasons;
-      if (typeof reasons === 'string') { try { reasons = JSON.parse(reasons); } catch {} }
-      const why = (id, i) => Array.isArray(reasons) ? reasons[i] : reasons && typeof reasons === 'object' ? reasons[id] : '';
-      out.append(h('div', { class: 'card' },
-        h('h3', null, r.goal || '(no goal)'),
-        h('div', { class: 'meta' }, [r.session_id, r.tokens != null ? r.tokens + ' tokens' : '', fmt(r.ts)].filter(Boolean).join(' · ')),
-        ids.length ? h('table', null, h('tr', null, h('th', null, 'Item'), h('th', null, 'Why')),
-          ids.map((id, i) => h('tr', null, h('td', null, str(id)), h('td', null, str(why(id, i)))))) : empty('No items.')));
-    });
-  },
-
-  async settings(out) {
-    const s = await api(P('/api/settings'));
-    const pick = sel(s.mode, ['manual', 'automatic']);
-    const msg = h('span', { class: 'meta' });
-    out.append(h('div', { class: 'card', style: 'max-width:560px' },
-      h('h3', null, 'Capture mode'),
-      h('div', { class: 'meta' }, 'manual: nothing is saved without /uac save, and every proposal waits for review. automatic: capture is on, saves happen at the Stop threshold, and decision/architecture/lesson proposals auto-accept.'),
-      h('div', { class: 'row' }, pick, h('button', { class: 'pri', onclick: act(async () => { const r = await api(P('/api/settings'), 'PUT', { mode: pick.value }); msg.textContent = 'Saved: ' + r.mode; }) }, 'Save'), msg)));
+    const adv = h('div');
+    out.append(h('details', { ontoggle: (e) => { if (e.target.open && !adv.childNodes.length) advanced(adv).catch(err => adv.replaceChildren(empty(err.message))); } },
+      h('summary', null, 'Advanced (read-only): packs, retrievals, summaries, checkpoints'), adv));
   },
 };
 
-// ---------- cards + session detail ----------
-function cpCard(c) {
-  return h('div', { class: 'card' },
-    h('h3', null, pickBox(c.id), ' ', c.goal || '(no goal)'),
-    h('div', { class: 'meta' }, [c.id, c.trigger, c.session_id, fmt(c.ts)].filter(Boolean).join(' · ')),
-    text('Working', c.state_working ?? c.working), text('Broken', c.state_broken ?? c.broken),
-    list('Files', c.files), list('Next steps', c.next_steps), text('Note for next dev', c.note_for_next_dev ?? c.note));
-}
-function sumCard(s) {
-  return h('div', { class: 'card' },
-    h('h3', null, pickBox(s.id), ' ', s.title || '(untitled)'),
-    h('div', { class: 'meta' }, [s.id, s.level, s.session_id, fmt(s.created_at ?? s.ts),
-      s.tokens_in != null ? `${s.tokens_in} in / ${s.tokens_out} out tokens` : '', s.cost_usd ? '$' + Number(s.cost_usd).toFixed(4) : ''].filter(Boolean).join(' · ')),
-    h('pre', null, str(s.body)));
-}
-async function openSession(box, reload) {
-  const id = openSess;
-  box.replaceChildren(empty('Loading…'));
-  let d;
-  try { d = await api(`/api/sessions/${encodeURIComponent(id)}`); } catch (e) { box.replaceChildren(empty(e.message)); return; }
-  if (id !== openSess) return;
-  const s = d.session || {}, L = d.loaded, evs = arr(d.events), sums = arr(d.summaries), cps = arr(d.checkpoints), ms = arr(d.memories);
-  const evBox = h('div');
-  const drawEv = (kind) => {
-    const rows = evs.filter(e => !kind || e.kind === kind);
-    evBox.replaceChildren(rows.length ? h('table', null, h('tr', null, ['Time', 'Kind', 'Tool', 'Target', 'Body'].map(t => h('th', null, t))),
-      rows.map(e => h('tr', null, h('td', { class: 'meta' }, fmt(e.ts)), h('td', null, e.kind), h('td', null, e.tool), h('td', null, e.target), h('td', { class: 'ev' }, h('div', null, str(e.body)))))) : empty('No events.'));
+// ---------- sessions ----------
+function sessionCard(s, nextIds, reload) {
+  const isNext = nextIds.includes(s.id);
+  const body = h('div');
+  const cap = s.capture === 'on' ? pill('● recording', 'ok') : s.capture === 'paused' ? pill('paused', 'warn') : pill('not recording');
+  const toggle = () => {
+    if (openCards.has(s.id)) { openCards.delete(s.id); body.replaceChildren(); if (focusSess === s.id) focusSess = null; }
+    else { openCards.add(s.id); focusSess = s.id; fillBody(s, body); }
+    setHash();
   };
-  const kinds = [...new Set(evs.map(e => e.kind))].sort();
-  const sec = (label, items, fn) => [h('h4', null, `${label} (${items.length})`), items.length ? items.map(fn) : empty('None.')];
-  box.replaceChildren(h('div', { class: 'card', style: 'margin-top:12px' },
-    h('div', { class: 'bar', style: 'justify-content:space-between' }, h('h3', null, s.title || id),
-      h('button', { onclick: () => { openSess = null; setHash(); box.replaceChildren(); reload(); } }, 'Close')),
-    h('div', { class: 'meta' }, [id, s.agent, s.branch && 'branch ' + s.branch, s.capture && 'capture ' + s.capture, s.status, fmt(s.started_at) + (s.ended_at ? ' → ' + fmt(s.ended_at) : '')].filter(Boolean).join(' · ')),
-    h('h4', null, 'Loaded at start'),
-    L ? h('div', null, 'tier ', h('b', null, L.tier || '–'), ' · pack ', L.pack ? h('b', null, str(L.pack)) : '–', L.goal ? [' · goal: ', str(L.goal)] : '') : empty('Nothing recorded (no bootstrap).'),
-    sec('Summaries', sums, sumCard), sec('Checkpoints', cps, cpCard),
-    h('h4', null, `Memories created (${ms.length})`),
-    ms.length ? h('table', null, ms.map(m => h('tr', null, h('td', null, pickBox(m.id)), h('td', null, m.type), h('td', null, memLink(m.id, m.title || m.id)), h('td', null, st(m.status))))) : empty('None.'),
-    h('h4', null, `Events (${evs.length}${evs.length >= 500 ? ', last 500' : ''})`),
-    h('div', { class: 'bar' }, sel('', [['', 'all kinds'], ...kinds], { onchange: (e) => drawEv(e.target.value) })), evBox));
-  drawEv('');
-  syncPicks();
+  const del = twoStep('Delete', async () => {
+    const i = await api(`/api/sessions/${enc(s.id)}/impact`);
+    const cardN = (i.summaries || 0) + (i.checkpoints || 0);
+    return `Confirm delete (${i.events ?? 0} events, ${i.memories ?? 0} memories, ${cardN} card item${cardN === 1 ? '' : 's'})`;
+  }, async () => {
+    const r = await api(`/api/sessions/${enc(s.id)}`, 'DELETE');
+    openCards.delete(s.id); dcache.delete(s.id);
+    const d = r?.deleted; toast('Session deleted' + (d ? ': ' + Object.entries(d).map(([k, v]) => `${v} ${k}`).join(', ') : ''), true);
+    await reload(true);
+  });
+  const nextIn = h('input', { type: 'checkbox', checked: isNext, onclick: (e) => e.stopPropagation(), onchange: act(async (e) => {
+    const ids = e.target.checked ? [...nextIds.filter(x => x !== s.id), s.id] : nextIds.filter(x => x !== s.id);
+    await api(P('/api/next'), 'PUT', { sessions: ids }); await reload(true);
+  }) });
+  const card = h('div', { class: 'card' + (isNext ? ' nextc' : '') + (s.id === focusSess ? ' focus' : ''), id: 's-' + s.id },
+    h('div', { class: 'sh', onclick: toggle },
+      h('span', { class: 'n' }, openCards.has(s.id) ? '▾' : '▸', ' #' + s.n),
+      h('h3', null, sTitle(s)),
+      h('label', { class: 'nexttog', title: 'Load this session card into the next session (pick one or several)', onclick: (e) => e.stopPropagation() }, nextIn, 'Continue from this in next session')),
+    h('div', { class: 'row', style: 'margin-top:2px' },
+      h('span', { class: 'meta' }, [s.agent, s.model, s.branch && '⎇ ' + s.branch, ago(s.ended_at || s.started_at)].filter(Boolean).join(' · ')),
+      cap,
+      s.card?.quality === 'auto' ? pill('auto card', 'warn', 'Built without an LLM because the session ended unsaved. Save it to refine.') : null,
+      !s.card ? pill('no card') : null,
+      Number(s.unsaved) > 0 ? pill(`unsaved ${s.unsaved}`, 'acc') : null,
+      Number(s.memories_created) > 0 ? pill(`${s.memories_created} memories`) : null,
+      h('span', { style: 'flex:1' }), del),
+    body);
+  if (openCards.has(s.id)) fillBody(s, body);
+  return card;
 }
 
-// ---------- memory detail + review cards ----------
-async function openMemory(box, reload) {
-  const id = openId;
-  box.replaceChildren(empty('Loading…'));
-  let m;
-  try { m = await api(`/api/memories/${encodeURIComponent(id)}`); } catch (e) { box.replaceChildren(empty(e.message)); return; }
-  if (id !== openId) return;
-  const f = {
-    title: h('input', { type: 'text', value: m.title ?? '' }),
-    body: h('textarea', { rows: 8 }, m.body ?? ''),
-    why: h('textarea', { rows: 3 }, m.why ?? ''),
-    type: sel(m.type, TYPES),
-    scope: sel(m.scope, SCOPES),
-    importance: h('input', { type: 'number', min: 0, max: 1, step: 0.05, value: m.importance ?? 0.5, style: 'width:90px' }),
-    pinned: h('input', { type: 'checkbox', checked: !!m.pinned }),
+function fillBody(s, box) {
+  const draw = (d) => {
+    const c = s.card, ms = arr(d?.memories), evs = arr(d?.events);
+    const evBox = h('div');
+    const ev = evs.length ? h('details', { open: openEvents.has(s.id), ontoggle: (e) => e.target.open ? openEvents.add(s.id) : openEvents.delete(s.id) },
+      h('summary', null, `Raw events (${evs.length}${evs.length >= 500 ? ', last 500' : ''})`),
+      h('table', null, h('tr', null, ['Time', 'Kind', 'Tool', 'Target', 'Body'].map(t => h('th', null, t))),
+        evs.map(e => h('tr', null, h('td', { class: 'meta' }, fmt(e.ts)), h('td', null, e.kind), h('td', null, e.tool), h('td', null, e.target), h('td', { class: 'ev' }, h('div', null, str(e.body))))))) : null;
+    fill(box, 
+      h('div', { class: 'meta', style: 'margin-top:6px' }, [s.id, s.status, fmt(s.started_at) + (s.ended_at ? ' → ' + fmt(s.ended_at) : '')].filter(Boolean).join(' · ')),
+      c ? [text('Summary', c.body), text('Working', c.working), text('Broken', c.broken), list('Next steps', c.next_steps), list('Files', c.files), text('Note for next dev', c.note)]
+        : empty('No card yet: this session has not been saved.'),
+      ms.length ? [h('h4', null, `Memories this session created (${ms.length})`), h('ul', null, ms.map(m => h('li', null,
+        h('a', { href: '#memories/' + enc(m.id) }, m.title || m.id), ' ', pill(m.type), ' ', st(m.status))))] : null,
+      ev, evBox);
   };
-  const after = async () => { await reload(); updateBadge(); if (openId) openMemory(box, reload); else box.replaceChildren(); };
-  const save = act(async () => {
-    await api(`/api/memories/${encodeURIComponent(id)}`, 'PUT', {
-      title: f.title.value, body: f.body.value, why: f.why.value, type: f.type.value, scope: f.scope.value,
-      importance: Number(f.importance.value), pinned: f.pinned.checked });
-    await after();
-  });
-  const invalidate = act(async () => { if (!confirm('Mark this memory as superseded?')) return; await api(`/api/memories/${encodeURIComponent(id)}`, 'PUT', { status: 'superseded' }); await after(); });
-  const del = act(async () => { if (!confirm(`Permanently delete ${id}? This cannot be undone.`)) return; await api(`/api/memories/${encodeURIComponent(id)}`, 'DELETE'); openId = null; await after(); });
-  const versions = arr(m.versions), rels = arr(m.relations);
-  box.replaceChildren(h('div', { class: 'card' },
-    h('div', { class: 'meta' }, id, ' · ', st(m.status), ' · source ', m.source || '?', m.source_agent ? ' (' + m.source_agent + ')' : '',
-      m.confidence != null ? ' · confidence ' + m.confidence : '', m.branch ? ' · branch ' + m.branch : '', ' · created ', fmt(m.created_at)),
-    h('div', { class: 'grid', style: 'margin-top:8px' },
-      h('label', null, 'Title'), f.title, h('label', null, 'Body'), f.body, h('label', null, 'Why'), f.why,
-      h('label', null, 'Type'), h('div', null, f.type), h('label', null, 'Scope'), h('div', null, f.scope),
-      h('label', null, 'Importance'), h('div', null, f.importance), h('label', null, 'Pinned'), h('div', null, f.pinned)),
-    h('div', { class: 'row' }, h('button', { class: 'pri', onclick: save }, 'Save'), h('button', { onclick: invalidate, disabled: m.status === 'superseded' }, 'Invalidate'), h('button', { class: 'dng', onclick: del }, 'Delete')),
-    list('Files', m.files),
-    m.review_when ? text('Review when', m.review_when) : null,
-    h('h4', null, `Versions (${versions.length})`),
-    versions.length ? versions.slice().reverse().map(v => h('div', { style: 'border-top:1px solid var(--bd);padding:4px 0' },
-      h('div', { class: 'meta' }, ['v' + (v.version ?? '?'), v.changed_by, fmt(v.ts), v.reason].filter(Boolean).join(' · ')), h('pre', null, str(v.body)))) : empty('No versions.'),
-    h('h4', null, `Relations (${rels.length})`),
-    rels.length ? h('ul', null, rels.map(r => {
-      const other = r.a === id ? r.b : r.a;
-      const link = h('a', { href: '#memories', onclick: (e) => { e.preventDefault(); openId = other; openMemory(box, reload); } }, str(other));
-      return h('li', null, r.a === id ? ['this ', r.rel, ' ', link] : [link, ' ', r.rel, ' this'], r.title ? ' · ' + r.title : '');
-    })) : empty('No relations.')));
+  const cached = dcache.get(s.id);
+  if (cached) draw(cached); else box.replaceChildren(empty('Loading…'));
+  api(`/api/sessions/${enc(s.id)}`).then(d => { dcache.set(s.id, d); if (box.isConnected) draw(d); }).catch(e => { if (!cached) draw(null); toast(e.message); });
+}
+
+// ---------- knowledge ----------
+function fresh(f) {
+  const s = f?.state;
+  if (s === 'verified') return pill('✓ verified', 'ok');
+  if (s === 'changed') return pill(`⚠ changed ${f.commits_since ?? '?'} commit${f.commits_since === 1 ? '' : 's'}`, 'warn');
+  if (s === 'missing') return pill('✗ missing', 'bad', 'Anchored file or symbol not found');
+  return pill('?', '', 'Freshness unknown');
+}
+const anchorText = (a) => typeof a === 'string' ? a : (a.symbol ? a.symbol + '@' : '') + (a.file || '') + (a.line ? ':' + a.line : '');
+const anchors = (v) => { const a = arr(v); return a.length ? h('div', { class: 'mono meta' }, a.map(anchorText).join('  ')) : null; };
+
+function memRow(m, reload) {
+  const row = h('div', { class: 'mem' + (m.id === focusMem ? ' focus' : ''), id: 'm-' + m.id });
+  const put = (b) => act(async () => { m = { ...m, ...(await api(`/api/memories/${enc(m.id)}`, 'PUT', b)) }; draw(); });
+  const draw = () => fill(row, 
+    h('div', null, m.pinned ? '★ ' : '', h('b', null, m.title || '(untitled)'), ' ', st(m.status), fresh(m.freshness),
+      m.muted ? pill('🔇 muted', 'warn', 'Never loaded') : null, m.source_model ? pill('by ' + m.source_model) : null),
+    h('div', { class: 'mbody' }, str(m.body)),
+    anchors(m.anchors),
+    h('div', { class: 'row' },
+      h('button', { class: m.pinned ? 'on' : '', title: 'Pin: always load first', onclick: put({ pinned: !m.pinned }) }, m.pinned ? '★ Pinned' : '☆ Pin'),
+      h('button', { class: m.muted ? 'on' : '', title: 'Mute: keep it but never load it', onclick: put({ muted: !m.muted }) }, m.muted ? '🔇 Muted' : '🔇 Mute'),
+      h('button', { title: 'Still true: mark verified at the current commit', onclick: act(async () => { m = { ...m, ...(await api(`/api/memories/${enc(m.id)}/verify`, 'POST', {})) }; draw(); toast('Verified', true); }) }, '✓ Verify'),
+      h('button', { onclick: edit }, 'Edit'),
+      m.status !== 'superseded' ? twoStep('Invalidate', 'Confirm invalidate', async () => { await api(`/api/memories/${enc(m.id)}`, 'PUT', { status: 'superseded' }); reload(); }) : null,
+      twoStep('Delete', 'Confirm delete forever', async () => { await api(`/api/memories/${enc(m.id)}`, 'DELETE'); reload(); }),
+      h('span', { class: 'meta' }, [m.source_agent, m.branch && '⎇ ' + m.branch, 'updated ' + ago(m.updated_at)].filter(Boolean).join(' · '))));
+  function edit() {
+    const f = {
+      title: h('input', { type: 'text', value: m.title ?? '' }),
+      body: h('textarea', { rows: 6 }, m.body ?? ''),
+      why: h('textarea', { rows: 2 }, m.why ?? ''),
+      type: sel(m.type, [...new Set([...TYPES, m.type].filter(Boolean))]),
+      anchors: h('textarea', { rows: 3, placeholder: '[{"file":"src/x.js","symbol":"fn","line":42}]' }, JSON.stringify(arr(m.anchors), null, 1)),
+    };
+    const err = h('span', { class: 'meta', style: 'color:var(--bad)' });
+    row.replaceChildren(h('div', { class: 'grid' },
+      h('span', null, 'Title'), f.title, h('span', null, 'Body'), f.body, h('span', null, 'Why'), f.why,
+      h('span', null, 'Type'), h('div', null, f.type), h('span', null, 'Anchors'), f.anchors),
+      h('div', { class: 'row' }, h('button', { class: 'pri', onclick: act(async () => {
+        let an;
+        try { an = f.anchors.value.trim() ? JSON.parse(f.anchors.value) : []; if (!Array.isArray(an)) throw 0; } catch { err.textContent = 'Anchors must be a JSON array'; return; }
+        m = { ...m, ...(await api(`/api/memories/${enc(m.id)}`, 'PUT', { title: f.title.value, body: f.body.value, why: f.why.value, type: f.type.value, anchors: an })) };
+        draw();
+      }) }, 'Save'), h('button', { onclick: draw }, 'Cancel'), err));
+    f.title.focus();
+  }
+  draw();
+  return row;
 }
 
 function memCard(m, label) {
   return h('div', { class: 'card' },
     label ? h('div', { class: 'meta' }, label) : null,
     h('h3', null, m.title || '(untitled)'),
-    h('div', { class: 'meta' }, m.id, ' · ', m.type, ' · ', st(m.status), m.source_agent ? ' · ' + m.source_agent : '', m.confidence != null ? ' · conf ' + m.confidence : '', ' · ', fmt(m.created_at)),
-    h('pre', null, str(m.body)), text('Why', m.why), list('Files', m.files));
+    h('div', { class: 'meta' }, m.type, ' · ', st(m.status), m.source_model ? ' · by ' + m.source_model : m.source_agent ? ' · ' + m.source_agent : '',
+      m.confidence != null ? ' · confidence ' + m.confidence : '', ' · ', ago(m.created_at)),
+    h('pre', null, str(m.body)), text('Why', m.why), anchors(m.anchors), list('Files', m.files));
 }
 
-function reviewCard(m, label) {
+function reviewCard(m, label, reload) {
   const card = memCard(m, label);
   const resolve = (action, body) => act(async () => {
-    await api(`/api/memories/${encodeURIComponent(m.id)}/resolve`, 'POST', body !== undefined ? { action, body } : { action });
-    updateBadge(); render();
+    await api(`/api/memories/${enc(m.id)}/resolve`, 'POST', body !== undefined ? { action, body } : { action });
+    reload();
   });
   const row = h('div', { class: 'row' },
     h('button', { class: 'pri', onclick: resolve('accept') }, 'Accept'),
     h('button', { class: 'dng', onclick: resolve('reject') }, 'Reject'),
     h('button', { onclick: () => {
-      const ta = h('textarea', { rows: 8 }, m.body ?? '');
-      const go = h('button', { class: 'pri', onclick: (e) => resolve('accept', ta.value)(e) }, 'Accept edited');
-      row.replaceWith(h('div', null, ta, h('div', { class: 'row' }, go, h('button', { onclick: () => render() }, 'Cancel'))));
+      const ta = h('textarea', { rows: 6 }, m.body ?? '');
+      row.replaceWith(h('div', null, ta, h('div', { class: 'row' },
+        h('button', { class: 'pri', onclick: (e) => resolve('accept', ta.value)(e) }, 'Accept edited'), h('button', { onclick: reload }, 'Cancel'))));
       ta.focus();
     } }, 'Edit + accept'));
   card.append(row);
   return card;
 }
 
+// ---------- advanced (read-only plumbing) ----------
+async function advanced(box) {
+  const [packs, rets, sums, cps] = await Promise.all(['packs', 'retrievals', 'summaries', 'checkpoints'].map(k => api(P('/api/' + k)).catch(e => ({ err: e.message }))));
+  const sec = (label, items, fn) => h('details', null, h('summary', null, `${label} (${items.err ? 'error' : items.length})`),
+    items.err ? empty(items.err) : items.length ? items.map(fn) : empty('None.'));
+  fill(box, 
+    sec('Packs', packs, p => h('div', { class: 'card' }, h('h3', null, p.name || p.id, p.next ? pill('next session', 'ok') : null),
+      h('div', { class: 'meta' }, [p.id, arr(p.item_ids ?? p.items).length + ' items', p.budget_tokens && p.budget_tokens + ' token budget', fmt(p.created_at)].filter(Boolean).join(' · ')), text('Goal', p.goal))),
+    sec('Retrievals', rets, r => h('div', { class: 'card' }, h('h3', null, r.goal || '(no goal)'),
+      h('div', { class: 'meta' }, [r.session_id, r.tokens != null && r.tokens + ' tokens', fmt(r.ts)].filter(Boolean).join(' · ')),
+      h('div', { class: 'mono meta' }, arr(r.item_ids).map(str).join('  ')))),
+    sec('Summaries', sums, s => h('div', { class: 'card' }, h('h3', null, s.title || '(untitled)'),
+      h('div', { class: 'meta' }, [s.id, s.level, s.quality, s.session_id, fmt(s.created_at ?? s.ts)].filter(Boolean).join(' · ')), h('pre', null, str(s.body)))),
+    sec('Checkpoints', cps, c => h('div', { class: 'card' }, h('h3', null, c.goal || '(no goal)'),
+      h('div', { class: 'meta' }, [c.id, c.trigger, c.session_id, fmt(c.ts)].filter(Boolean).join(' · ')),
+      text('Working', c.state_working ?? c.working), text('Broken', c.state_broken ?? c.broken), list('Files', c.files), list('Next steps', c.next_steps),
+      text('Note for next dev', c.note_for_next_dev ?? c.note))));
+}
+
 // ---------- boot ----------
 setInterval(() => { if (tab === 'sessions' && !document.hidden && project && pollFn) pollFn(); }, 5000);
 (async () => {
   drawTabs();
-  if (!TOKEN) showErr('No token in URL (?t=…). Open the link printed by `uac view`.');
+  if (!TOKEN) toast('No token in URL (?t=…). Open the link printed by `uac view`.');
   try { await loadProjects(); } catch (e) { main.replaceChildren(empty(e.message)); return; }
   updateBadge();
   render();

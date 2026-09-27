@@ -14,6 +14,7 @@ export function normalize(hostEvent, i) {
     source: i.source, prompt: i.prompt, tool: i.tool_name, tool_input: i.tool_input,
     tool_response: i.tool_response ?? i.error, agent_id: i.agent_id, agent_type: i.agent_type,
     last_message: i.last_assistant_message, stop_hook_active: !!i.stop_hook_active,
+    model: typeof i.model === 'string' ? i.model : i.model?.id ?? i.model?.display_name,
   };
 }
 
