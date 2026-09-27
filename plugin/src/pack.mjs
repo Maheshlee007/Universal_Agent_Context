@@ -19,7 +19,7 @@ export const ago = (iso) => {
 const MARK = { verified: '✓', changed: '⚠', missing: '✗', unknown: '' };
 const fresh = (m) => {
   const f = m.freshness || {};
-  if (f.state === 'changed') return `⚠ changed ${f.commits_since} commit${f.commits_since === 1 ? '' : 's'} since recorded, verify`;
+  if (f.state === 'changed') return `⚠ file changed since verified${f.commits_since ? ` (${f.commits_since} commit${f.commits_since === 1 ? '' : 's'})` : ' (uncommitted)'}, verify`;
   if (f.state === 'missing') return '✗ anchored file/symbol not found, verify';
   return MARK[f.state] || '';
 };
@@ -39,6 +39,9 @@ function fmtCard(c, meta) {
   if (c.note) L.push(`Note for next dev: ${clip(c.note, 300)}`);
   return L.join('\n');
 }
+// Human label for a session in lists: its card/title, else what little we know, always with age.
+export const sessionLabel = (x, n = 50) =>
+  `${clip(x.card?.title || x.title || `${x.agent} session, ${x.events} event${x.events === 1 ? '' : 's'}, no card`, n)} (${ago(x.started_at)})`;
 const cardMeta = (s, n) => `${n ? `#${n} · ` : ''}${s.branch || 'no-branch'} · ${s.agent}${s.model ? ` (${s.model})` : ''} · ${ago(s.started_at)}`;
 
 // ---------- bootstrap: project knowledge + chosen session cards + other branches + messages ----------
@@ -179,8 +182,9 @@ export function startContext(s, p, { source } = {}) {
     text = bootstrap(s, p, {}).text;
   }
   const L = [];
-  const recent = S.listSessions(p.id, { limit: 6 }).filter((x) => x.id !== s.id).slice(0, 5);
-  if (recent.length) L.push(`Sessions (for "#uac continue <n>"): ${recent.map((x) => `#${x.n} ${clip(x.card?.title || x.title || '(untitled)', 50)} [${x.branch || '-'}]`).join(' · ')}`);
+  // only sessions worth continuing from (a card or some recorded events)
+  const recent = S.listSessions(p.id, { limit: 20 }).filter((x) => x.id !== s.id && (x.card || x.events)).slice(0, 5);
+  if (recent.length) L.push(`Sessions (for "#uac continue <n>"): ${recent.map((x) => `#${x.n} ${sessionLabel(x)} [${x.branch || '-'}]`).join(' · ')}`);
   if (unsaved.length && p.mode === 'automatic')
     L.push(`Session ${unsaved[0].session_id} ended without an LLM save (auto card made). When convenient (not before answering the user), spawn the uac-compressor subagent with "session_id=${unsaved[0].session_id}" to refine it.`);
   const uncaptured = get(`SELECT COUNT(*) AS n FROM sessions WHERE project_id = ? AND id != ? AND capture IN ('off','ask') AND transcript_path IS NOT NULL
@@ -292,7 +296,7 @@ export function save(s, p, { upto_event_id, summary, checkpoint, candidates = []
   }
   // the card replaces the raw events: nothing to compress again
   res.events_removed = run(`DELETE FROM events WHERE session_id = ? AND id <= ?`, s.id, upto).changes;
-  run(`UPDATE sessions SET saved_event_id = MAX(saved_event_id, ?), quality = 'llm', model = COALESCE(model, ?) WHERE id = ?`, upto, model ?? null, s.id);
+  run(`UPDATE sessions SET saved_event_id = MAX(saved_event_id, ?), quality = 'llm' WHERE id = ?`, upto, s.id); // the card records the compressor's model; the session keeps its own
   try { res.exported = S.exportProjectMd(p); } catch (e) { res.errors.push(`export: ${e.message}`); }
   checkpointWal();
   return res;

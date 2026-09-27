@@ -63,17 +63,24 @@ export function ignored(root, target) {
   return res.some((re) => re.test(rel) || re.test(path.basename(rel)));
 }
 
+// Short-lived hook processes cache git answers (a SessionStart otherwise runs ~12 git commands).
+let gitCache = null;
+export const enableGitCache = () => { gitCache = new Map(); };
 export function git(cwd, ...args) {
+  const key = gitCache && [cwd, ...args].join('\u0000');
+  if (key && gitCache.has(key)) return gitCache.get(key);
   const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 3000, windowsHide: true });
-  return r.status === 0 ? r.stdout.trim() : '';
+  const out = r.status === 0 ? r.stdout.trim() : '';
+  if (key) gitCache.set(key, out);
+  return out;
 }
 
 export function gitInfo(cwd) {
-  const root = git(cwd, 'rev-parse', '--show-toplevel');
+  const [root, branch] = git(cwd, 'rev-parse', '--show-toplevel', '--abbrev-ref', 'HEAD').split(/\r?\n/);
   if (!root) return { root: path.resolve(cwd), branch: null, commit: null, remote: null };
   return {
     root: path.resolve(root),
-    branch: git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD') || null,
+    branch: branch && branch !== 'HEAD' ? branch : null,
     commit: git(cwd, 'rev-parse', '--short', 'HEAD') || null,
     remote: git(cwd, 'config', '--get', 'remote.origin.url') || null,
   };

@@ -126,6 +126,24 @@ test('anchors: renamed symbol → ✗, verify tool, commits since → ⚠', asyn
   assert.equal(m.freshness.state, 'verified');
 });
 
+test('freshness compares content: committing the verified content is not a change', async () => {
+  fs.writeFileSync(path.join(repo, 'src', 'auth.js'), 'export function rotateRefreshToken() {}\n// v3 uncommitted\n');
+  let [m] = S.freshness(S.projectFor(repo), [S.memory(decisionId)]);
+  assert.equal(m.freshness.state, 'changed', 'uncommitted edit detected');
+  await callTool('uac_verify', { ids: [decisionId] }); // agent checked the new code
+  g('commit', '-qam', 'commit what was verified');
+  [m] = S.freshness(S.projectFor(repo), [S.memory(decisionId)]);
+  assert.equal(m.freshness.state, 'verified');
+});
+
+test('start context re-delivered on first prompt if SessionStart never completed (host timeout)', () => {
+  hook('SessionStart', { session_id: 'sess-slow', source: 'startup' });
+  S.open().prepare("UPDATE sessions SET ctx_at = NULL WHERE id = 'sess-slow'").run(); // simulate a killed hook
+  assert.match(ctxOf(hook('UserPromptSubmit', { session_id: 'sess-slow', prompt: 'hi' })), /# UAC ·/);
+  assert.doesNotMatch(ctxOf(hook('UserPromptSubmit', { session_id: 'sess-slow', prompt: 'again' })), /# UAC ·/, 'only once');
+  cli('rm', 'sess-slow', '--yes');
+});
+
 test('digest recheck lists memories whose anchored files this session changed', async () => {
   S.addEvent(S.session('sess-2'), 'tool', { tool: 'Edit', target: 'src/auth.js' });
   S.addEvent(S.session('sess-2'), 'prompt', { body: 'tweak auth' });

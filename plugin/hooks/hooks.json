@@ -6,7 +6,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs\" hook claude SessionStart",
-            "timeout": 10
+            "timeout": 30
           }
         ]
       }
@@ -17,7 +17,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs\" hook claude UserPromptSubmit",
-            "timeout": 10
+            "timeout": 30
           }
         ]
       }
@@ -29,7 +29,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs\" hook claude PostToolUse",
-            "timeout": 10,
+            "timeout": 30,
             "async": true
           }
         ]
@@ -42,7 +42,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs\" hook claude PostToolUseFailure",
-            "timeout": 10,
+            "timeout": 30,
             "async": true
           }
         ]
@@ -54,7 +54,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs\" hook claude SubagentStop",
-            "timeout": 10
+            "timeout": 30
           }
         ]
       }
@@ -65,7 +65,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs\" hook claude PreCompact",
-            "timeout": 10
+            "timeout": 30
           }
         ]
       }
@@ -76,7 +76,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs\" hook claude Stop",
-            "timeout": 10
+            "timeout": 30
           }
         ]
       }
@@ -87,7 +87,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs\" hook claude SessionEnd",
-            "timeout": 10
+            "timeout": 30
           }
         ]
       }

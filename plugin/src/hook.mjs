@@ -4,7 +4,7 @@ import path from 'node:path';
 import { run, home, spool, now, checkpointWal } from './db.mjs';
 import * as S from './store.mjs';
 import * as K from './pack.mjs';
-import { clip, redact, target } from './util.mjs';
+import { clip, redact, target, enableGitCache } from './util.mjs';
 import { adapters } from './adapters/index.mjs';
 import { importTranscript } from './import.mjs';
 
@@ -27,7 +27,7 @@ function control(s, p, cmd, rest) {
     case 'deep': return `[UAC] Deeper context:\n\n${K.bootstrap(S.session(s.id), p, { depth: 'deep', sessions: (JSON.parse(s.loaded || '{}').sessions) || [] }).text}`;
     case 'continue': {
       const refs = rest.split(/[\s,]+/).filter(Boolean);
-      if (!refs.length) return `[UAC] Usage: #uac continue <n> [n…]. ${S.listSessions(p.id, { limit: 6 }).map((x) => `#${x.n} ${clip(x.card?.title || x.title || '(untitled)', 40)}`).join(' · ')}`;
+      if (!refs.length) return `[UAC] Usage: #uac continue <n> [n…]. ${S.listSessions(p.id, { limit: 8 }).filter((x) => x.card || x.events).map((x) => `#${x.n} ${K.sessionLabel(x, 40)}`).join(' · ')}`;
       return `[UAC] Continuing from session(s) ${refs.join(', ')}:\n\n${K.bootstrap(S.session(s.id), p, { sessions: refs }).text}`;
     }
     case 'import': {
@@ -64,7 +64,9 @@ export function handle(ev) {
 
     case 'prompt': {
       const out = [];
-      if (created) out.push(K.startContext(s, p)); // hosts without SessionStart (Antigravity): first prompt acts as start
+      // hosts without SessionStart (Antigravity), or a SessionStart the host timed out: the first prompt delivers the start context
+      const needStart = created || (!s.ctx_at && !S.unsavedCount(s) && ev.source !== 'compact');
+      if (needStart) out.push(K.startContext(s, p));
       const m = CONTROL.exec(ev.prompt || '');
       if (m) { const r = control(s, p, m[2].toLowerCase(), (m[3] || '').trim()); if (r) out.push(r); }
       const cur = S.session(s.id);
@@ -78,7 +80,7 @@ export function handle(ev) {
           S.markRead(cur, msgs);
         }
       }
-      return out.length ? { context: out.join('\n\n') } : {};
+      return out.length ? { context: out.join('\n\n'), start: needStart } : {};
     }
 
     case 'tool':
@@ -109,6 +111,7 @@ export function handle(ev) {
 
 // Entry used by `uac hook <host> <event>`: never throws, never blocks the host on errors.
 export async function main(host, hostEvent) {
+  enableGitCache();
   let raw = '';
   for await (const chunk of process.stdin) raw += chunk;
   let ev;
@@ -128,6 +131,8 @@ export async function main(host, hostEvent) {
     }
     const out = adapter.format(ev, result || {});
     if (out != null) process.stdout.write(typeof out === 'string' ? out : JSON.stringify(out));
+    // mark the start context as delivered; if the host killed us before this (timeout), the first prompt re-injects it
+    if (result?.context && (ev.event === 'start' || result.start)) run('UPDATE sessions SET ctx_at = ? WHERE id = ?', now(), ev.session_id);
   } catch (e) {
     try {
       fs.mkdirSync(home(), { recursive: true }); // the error may happen before the DB (and its folder) was created

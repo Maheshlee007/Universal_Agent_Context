@@ -84,7 +84,7 @@ export async function main(argv) {
     }
     case 'sessions': {
       const rows = S.listSessions(proj().id, { active: o.active });
-      return out(rows, rows.map((r) => `#${String(r.n).padEnd(3)} ${(r.card?.title || r.title || '(untitled)').slice(0, 70).padEnd(70)} [${r.branch || '-'}] ${r.agent}${r.model ? `/${r.model}` : ''} · ${ago(r.started_at)}` +
+      return out(rows, rows.map((r) => `#${String(r.n).padEnd(3)} ${(r.card?.title || r.title || `${r.agent} session, ${r.events} events, no card`).slice(0, 70).padEnd(70)} [${r.branch || '-'}] ${r.agent}${r.model ? `/${r.model}` : ''} · ${ago(r.started_at)}` +
         `${r.card ? (r.card.quality === 'auto' ? ' · auto card' : ' · card') : ''}${r.unsaved ? ` · ${r.unsaved} unsaved` : ''}${r.capture === 'on' ? ' · REC' : ''}${r.next ? ' · NEXT' : ''}`).join('\n') || '(no sessions)');
     }
     case 'session': {

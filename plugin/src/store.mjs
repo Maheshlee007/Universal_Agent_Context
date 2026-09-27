@@ -235,11 +235,25 @@ export function hydrate(m) {
   m.anchors = P(m.anchors, []);
   m.pinned = !!m.pinned;
   m.muted = !!m.muted;
+  m.hashes = P(m.hashes, null);
   return m;
 }
 export const memory = (id) => hydrate(get('SELECT * FROM memories WHERE id = ?', id));
 
 const anchorFiles = (m) => [...new Set([...(m.files || []), ...(m.anchors || []).map((a) => a.file).filter(Boolean)])];
+
+// Content hash per anchored file at write/verify time. Freshness compares content, not commit counts,
+// so committing the very change a memory describes doesn't flag it (CRLF-normalised for autocrlf checkouts).
+const hashFile = (root, f) => {
+  try { return crypto.createHash('sha1').update(fs.readFileSync(path.join(root, f), 'utf8').replace(/\r\n/g, '\n')).digest('hex').slice(0, 12); }
+  catch { return null; }
+};
+function setHashes(id, root) {
+  const m = memory(id);
+  if (!m || !root) return;
+  run('UPDATE memories SET hashes = ? WHERE id = ?', J(Object.fromEntries(anchorFiles(m).map((f) => [f, hashFile(root, f)]))), id);
+}
+const rootOf = (m) => project(m.project_id)?.root;
 
 // Policy: the compressor is the reviewer. Confident, non-conflicting items are accepted in every mode;
 // only conflicts and low-confidence items wait for a human.
@@ -269,6 +283,7 @@ export function propose(input, { s, p, via = 'llm', model }) {
     status === 'active' ? (via === 'user' ? 'user' : 'auto-policy') : null, status === 'active' ? now() : null,
     p.commit ?? null, now());
   run('INSERT INTO memory_versions VALUES (?,?,?,?,?,?,?)', id, 1, input.title, input.body, via, 'created', now());
+  setHashes(id, p.root);
   return memory(id);
 }
 
@@ -291,6 +306,7 @@ export function updateMemory(id, patch, { by = 'user', reason = 'edit' } = {}) {
       run('INSERT INTO memory_versions VALUES (?,?,?,?,?,?,?)', id, v + 1, patch.title ?? m.title, patch.body ?? m.body, by, reason, now());
     }
   });
+  if (patch.body !== undefined || patch.files !== undefined || patch.anchors !== undefined) setHashes(id, rootOf(m)); // re-asserted against current code
   return memory(id);
 }
 
@@ -300,6 +316,7 @@ export function verifyMemory(id, p) {
   if (!m) throw new Error(`no memory ${id}`);
   const head = git(p.root, 'rev-parse', '--short', 'HEAD') || m.verified_commit;
   run(`UPDATE memories SET last_verified_at = ?, verified_commit = ?, status = CASE WHEN status = 'stale' THEN 'active' ELSE status END WHERE id = ?`, now(), head, id);
+  setHashes(id, p.root);
   return memory(id);
 }
 
@@ -379,12 +396,16 @@ export function freshness(p, mems) {
       if (a.symbol) { try { if (!fs.readFileSync(f, 'utf8').includes(a.symbol)) { state = 'missing'; break; } } catch {} }
     }
     const base = m.verified_commit || m.source_commit;
-    if (state !== 'missing' && base && files.length) {
-      const idx = commits.findIndex((c) => c.h.startsWith(base) || base.startsWith(c.h));
-      if (idx === -1) { if (commits.length) state = state === 'verified' ? 'unknown' : state; }
-      else {
-        since = commits.slice(0, idx).filter((c) => files.some((f) => c.files.has(f))).length;
-        if (since > 0) state = 'changed';
+    const idx = base ? commits.findIndex((c) => c.h.startsWith(base) || base.startsWith(c.h)) : -1;
+    if (idx > 0) since = commits.slice(0, idx).filter((c) => files.some((f) => c.files.has(f))).length;
+    if (state !== 'missing' && files.length) {
+      if (m.hashes && Object.keys(m.hashes).length) {
+        // content comparison: authoritative, also catches uncommitted edits
+        if (files.some((f) => m.hashes[f] !== undefined && hashFile(p.root, f) !== m.hashes[f])) state = 'changed';
+        else since = 0;
+      } else if (base) { // legacy memories without hashes: fall back to commit history
+        if (idx === -1) { if (commits.length) state = 'unknown'; }
+        else if (since > 0) state = 'changed';
       }
     }
     m.freshness = { state, commits_since: since };
