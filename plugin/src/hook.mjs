@@ -12,7 +12,8 @@ export { target };
 const SKIP_TOOLS = /^(TodoWrite|ToolSearch|TaskList|TaskGet|TaskOutput)$|^mcp__.*uac__uac_/;
 // #uac on|off|pause|resume|save [n]|stop|fresh|deep|import|continue <n…>|msg <text>|name <title>|rollup [n…]
 // Only at the start of the message or of a line: "#uac save <n>" quoted inside docs/pasted text must not fire.
-const CONTROL = /(^|\n)#uac\s+(on|off|pause|resume|save|stop|fresh|deep|import|continue|msg|name|rollup)\b([^\n]*)/i;
+// "uac: save" is the same as "#uac save": Claude Code intercepts messages that START with "#" (memory shortcut).
+const CONTROL = /(^|\n)(?:#uac\s+|uac:\s*)(on|off|pause|resume|save|stop|fresh|deep|import|continue|msg|name|rollup)\b([^\n]*)/i;
 const saveInstruction = (sid) =>
   `[UAC] Save requested. Spawn the uac-compressor subagent (Agent/Task tool, subagent_type "uac-compressor") with the prompt "session_id=${sid}". If subagents are unavailable, do its steps yourself: uac_digest → uac_save. Then continue.`;
 const str = (v) => (v == null ? null : typeof v === 'string' ? v : JSON.stringify(v));

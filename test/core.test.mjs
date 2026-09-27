@@ -215,6 +215,9 @@ test('sessions are auto-named from the first prompt; #uac name renames; empty fl
   assert.equal(S.session('sess-nm').title, 'Add pagination to the users list');
   assert.match(ctxOf(hook('UserPromptSubmit', { session_id: 'sess-nm', prompt: '#uac name Users pagination' })), /named/);
   assert.equal(S.session('sess-nm').title, 'Users pagination');
+  hook('UserPromptSubmit', { session_id: 'sess-nm', prompt: 'uac: name Users pagination v2' }); // alias for Claude Code, where a leading "#" is intercepted
+  assert.equal(S.session('sess-nm').title, 'Users pagination v2');
+  hook('UserPromptSubmit', { session_id: 'sess-nm', prompt: '#uac name Users pagination' });
   hook('SessionStart', { session_id: 'sess-empty', source: 'startup' });
   assert.equal(S.listSessions(pid()).find((x) => x.id === 'sess-empty').empty, true);
   assert.equal(S.listSessions(pid()).find((x) => x.id === 'sess-nm').empty, false);

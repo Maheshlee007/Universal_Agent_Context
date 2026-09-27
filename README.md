@@ -31,7 +31,8 @@ node plugin/bin/uac.mjs doctor         # shows the DB path (~/.uac/uac.db), inte
 Restart your agent and open a git project. **[docs/INSTALL.md](docs/INSTALL.md)** has per-tool details, the VS Code extension, the standalone exe and troubleshooting.
 
 ## Everyday use: type these in any chat, with any tool
-Type them at the **start of your message** (or the start of a line). Text that merely quotes `#uac …` further inside a line is ignored.
+Type them at the **start of a line**. Text that merely quotes `#uac …` further inside a line is ignored.
+**In Claude Code, write `uac: save` instead of `#uac save` when it's the very first thing in your message.** Claude Code intercepts messages that begin with `#` (its memory shortcut), so the hook never sees them. `#uac …` on a later line works too.
 
 | You type | Effect |
 |---|---|

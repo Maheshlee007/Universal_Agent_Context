@@ -258,3 +258,10 @@ Yes. It's the same session, and new work is recorded there.
 - At the start UAC tells you: "This session has N unsaved events since <time>. #uac save writes/updates its card."
 - New work keeps being added to the same session. In automatic mode it's saved by itself once enough work has piled up; in manual mode, type `#uac save`.
 - Resuming re-sends the whole old conversation to the model, which is expensive. For a cheaper start, open a new session and type `#uac continue <n>`: it loads the ~2K-token card.
+
+## "#uac" at the start of a message in Claude Code
+Claude Code treats a message that **starts with `#`** as its own memory shortcut, so UAC never sees it. You have two options:
+- Write `uac: save` (or `uac: name My task`, `uac: continue 2`…). It works the same everywhere.
+- Put `#uac save` on a later line of the message.
+
+This was found in live testing on 2026-09-28.
