@@ -54,7 +54,7 @@ const defined = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v 
 
 for (const [host, fx] of Object.entries(fixtures)) {
   test(`${host} adapter`, async () => {
-    const a = await import(`../src/adapters/${host}.mjs`);
+    const a = await import(`../plugin/src/adapters/${host}.mjs`);
     assert.equal(a.events[fx.hostEvent], fx.expect.event);
 
     const ev = a.normalize(fx.hostEvent, fx.input);

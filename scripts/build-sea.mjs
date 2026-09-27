@@ -17,7 +17,7 @@ const run = (cmd, args, opts = {}) =>
 mkdirSync(join(root, 'dist'), { recursive: true });
 
 // 1. Bundle ESM -> one CJS file (a SEA main script must be CJS on Node 22). node:* stays external.
-run('npx', ['--yes', 'esbuild', 'bin/uac.mjs', '--bundle', '--platform=node', '--format=cjs', '--target=node22',
+run('npx', ['--yes', 'esbuild', 'plugin/bin/uac.mjs', '--bundle', '--platform=node', '--format=cjs', '--target=node22',
   '--external:node:*', '--supported:dynamic-import=false', '--define:import.meta.url=__uac_url',
   '--outfile=dist/uac.cjs']);
 
@@ -29,7 +29,7 @@ const cjs = join(root, 'dist/uac.cjs');
 writeFileSync(cjs, prelude + readFileSync(cjs, 'utf8').replace(/^#!.*\n/, ''));
 
 // 2. SEA blob. The viewer is embedded as an asset: require('node:sea').getAsset('viewer.html', 'utf8').
-const viewer = join(root, 'viewer/viewer.html');
+const viewer = join(root, 'plugin/viewer/viewer.html');
 const cfg = join(root, 'dist/sea-config.json');
 writeFileSync(cfg, JSON.stringify({
   main: cjs, output: join(root, 'dist/uac.blob'),

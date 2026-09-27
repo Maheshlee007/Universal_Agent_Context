@@ -8,7 +8,7 @@ import { spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const BIN = path.join(ROOT, 'bin', 'uac.mjs');
+const BIN = path.join(ROOT, 'plugin', 'bin', 'uac.mjs');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'uac-test-'));
 process.env.UAC_HOME = path.join(tmp, 'home');
 const repo = path.join(tmp, 'repo');
@@ -25,9 +25,9 @@ const hook = (event, input) => {
 };
 const cli = (...a) => JSON.parse(spawnSync(process.execPath, [BIN, ...a, '--json', '--cwd', repo], { encoding: 'utf8', env: process.env }).stdout);
 
-const { callTool } = await import('../src/mcp.mjs');
-const S = await import('../src/store.mjs');
-const { redact, ignored } = await import('../src/util.mjs');
+const { callTool } = await import('../plugin/src/mcp.mjs');
+const S = await import('../plugin/src/store.mjs');
+const { redact, ignored } = await import('../plugin/src/util.mjs');
 process.env.UAC_CWD = repo;
 
 test('redaction and ignore globs', () => {
@@ -146,7 +146,7 @@ test('git: files changed since source_commit → stale; branch memories promoted
 });
 
 test('viewer API: token required, list/edit/delete', async () => {
-  const { startViewer } = await import('../src/view.mjs');
+  const { startViewer } = await import('../plugin/src/view.mjs');
   const { server, url } = await startViewer({ port: 0, token: 'tok' });
   const base = new URL(url).origin;
   const pid = cli('status').project.id;
@@ -193,7 +193,7 @@ test('compact start re-injects the loaded pack + precompact snapshot', () => {
 });
 
 test('user chooses the next session context (dashboard/CLI), one-shot; per-session detail', async () => {
-  const { startViewer } = await import('../src/view.mjs');
+  const { startViewer } = await import('../plugin/src/view.mjs');
   const { server, url } = await startViewer({ port: 0, token: 'tok2' });
   const base = new URL(url).origin, pid = cli('status').project.id;
   const H = { 'x-uac-token': 'tok2', 'content-type': 'application/json' };

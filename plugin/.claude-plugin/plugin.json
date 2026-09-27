@@ -1,8 +1,25 @@
 {
   "name": "universal-agent-context",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Universal Agent Context (UAC): opt-in session memory, compression via in-session subagent, reviewable project knowledge, context packs for parallel sessions. Local SQLite, works across Claude Code, Codex, Gemini, Antigravity, Cursor, Copilot.",
-  "author": { "name": "UAC contributors" },
+  "author": {
+    "name": "UAC contributors"
+  },
   "license": "MIT",
-  "keywords": ["memory", "context", "session", "mcp", "knowledge"]
+  "keywords": [
+    "memory",
+    "context",
+    "session",
+    "mcp",
+    "knowledge"
+  ],
+  "mcpServers": {
+    "uac": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/bin/uac.mjs",
+        "mcp"
+      ]
+    }
+  }
 }
