@@ -89,4 +89,4 @@ The saving subagent is the reviewer:
 - [PLAN-v3.md](docs/PLAN-v3.md): the v0.3 rethink and a decision on every piece of feedback
 
 ## Tests
-`npm test` runs 27 tests covering the full flow: hooks, capture, save, knowledge, freshness, branches, messages, deletes, dashboard API, MCP, and all six adapters.
+`npm test` runs 34 tests (about 2 minutes) covering the full flow: hooks, capture, save, knowledge, freshness, branches, messages, naming, merge, rollup, same-session continuation, deletes, dashboard API, MCP, and all six adapters.

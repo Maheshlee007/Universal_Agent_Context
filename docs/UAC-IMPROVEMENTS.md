@@ -223,7 +223,7 @@ The friction points in that doc are legit and worth fixing, but they're not maki
 Want to keep using it, or disable it for this session?
 
 
-  ---- user questionsand find outs --
+  ---- user questionsand & find outs --
 - u mentioned the first run turned on recording, loaded context, edited a file, saved a decision, and ran the uac-compressor subagent on Haiku.But how the another llm knows wat to run.
 - the ui to pass respection chats or session to next chart is complicated as fromthe viewer user have to selccte the review, events, packs etc,also there i think once it is compressed that respective session content is replaced with updated or the compresssed version so again no need to compressi guess so.
 - ticikng respective memories is complicated because as it is written by llm how can a user selects it, i mentioed based on the session , which session to pass in that major things, as using it complicated.
@@ -239,3 +239,4 @@ Want to keep using it, or disable it for this session?
 - in cli version it will be more difficult as user have to see the id's and provide the pack and create checkpint it's difficult either provid eautorizationn to compress llm else show that in a text editor with yes no. etc..
 - the main thing i asked fo thta feature is if session is selected then regarding everthing it shoudl laod with respective session right, suppose inital basic architeture of the application is loaded and now using that will start two sessions to work on two feature on two branches then it shoould start working and those llm which share a common project can share branch based enhancements and improvments right.
 - once a new commit or earleir files got updated it should finally compress the exiting ones which it used  or not necessary u decide the complicated cases what we can do.
+- also if manualy have to create a extesnion, else plugin of uac, even exe there are no instrucitons avaible and no files, and how to use and integrate with remaing llm or ides
