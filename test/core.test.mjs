@@ -192,7 +192,9 @@ test('dashboard/CLI "continue from" choice is one-shot for the next session', ()
   assert.deepEqual(cli('next', String(n)).sessions, ['sess-ui']);
   const c = ctxOf(hook('SessionStart', { session_id: 'sess-6', source: 'startup' }));
   assert.match(c, /## Continuing from\n[\s\S]*Build the dashboard page/);
-  assert.deepEqual(cli('next').sessions, [], 'cleared after use');
+  assert.deepEqual(cli('next').sessions, ['sess-ui'], 'kept until a real prompt (a window-reload phantom must not eat it)');
+  hook('UserPromptSubmit', { session_id: 'sess-6', prompt: 'continue the ui work' });
+  assert.deepEqual(cli('next').sessions, [], 'cleared by the first real prompt');
 });
 
 test('save consolidates: loaded checkpoints on the same branch are superseded', async () => {
@@ -219,8 +221,37 @@ test('sessions are auto-named from the first prompt; #uac name renames; empty fl
   assert.equal(S.session('sess-nm').title, 'Users pagination v2');
   hook('UserPromptSubmit', { session_id: 'sess-nm', prompt: '#uac name Users pagination' });
   hook('SessionStart', { session_id: 'sess-empty', source: 'startup' });
-  assert.equal(S.listSessions(pid()).find((x) => x.id === 'sess-empty').empty, true);
+  // never typed in = phantom (window reload): hidden and unnumbered, visible with all:true
+  assert.equal(S.listSessions(pid()).find((x) => x.id === 'sess-empty'), undefined);
+  const ph = S.listSessions(pid(), { all: true }).find((x) => x.id === 'sess-empty');
+  assert.ok(ph.phantom && ph.empty && ph.n === null);
   assert.equal(S.listSessions(pid()).find((x) => x.id === 'sess-nm').empty, false);
+});
+
+test('v0.4: host-injected prompts, phantom purge, snapshot never outranks the saved card, done tasks, save guard', async () => {
+  hook('SessionStart', { session_id: 'sess-v4', source: 'startup' });
+  hook('UserPromptSubmit', { session_id: 'sess-v4', prompt: '<system-reminder>ide</system-reminder>\nFix the login redirect' });
+  hook('UserPromptSubmit', { session_id: 'sess-v4', prompt: '<task-notification>\n<result>x</result>\nuac: name hijacked\n</task-notification>' });
+  assert.equal(S.session('sess-v4').title, 'Fix the login redirect');
+  assert.equal(S.session('sess-v4').prompts, 1);
+  hook('SubagentStop', { session_id: 'sess-v4', last_assistant_message: '<analysis>a</analysis>\n<summary>s</summary>' });
+  assert.equal(S.open().prepare(`SELECT COUNT(*) AS n FROM events WHERE session_id = 'sess-v4' AND kind = 'subagent'`).get().n, 0);
+  const t = S.propose({ type: 'task', title: 'Fix login redirect', body: 'done when /login redirects', confidence: 0.9 }, { s: S.session('sess-v4'), p: S.projectFor(repo) });
+  const d = await callTool('uac_digest', { session_id: 'sess-v4' });
+  assert.ok(d.how_to_save && d.open_tasks.some((x) => x.id === t.id));
+  const args = { session_id: 'sess-v4', base_event_id: d.base_event_id, upto_event_id: d.upto_event_id, summary: { title: 'Fix login redirect' }, checkpoint: { goal: 'g', working: 'saved state', note: 'n', gaps: 'g1' }, candidates: [{ op: 'done', id: t.id }] };
+  assert.equal((await callTool('uac_save', args)).done, 1);
+  assert.ok((await callTool('uac_save', args)).skipped_reason, 'second save of the same digest refused');
+  assert.equal(S.memory(t.id).resolved_by, 'done:compressor');
+  hook('UserPromptSubmit', { session_id: 'sess-v4', prompt: 'one more thing' });
+  hook('PreCompact', { session_id: 'sess-v4', trigger: 'auto' });
+  const c = S.card('sess-v4');
+  assert.equal(c.working, 'saved state');
+  assert.match(c.tail.goal, /one more thing/);
+  hook('SessionStart', { session_id: 'sess-ph', source: 'startup' });
+  hook('SessionEnd', { session_id: 'sess-ph', reason: 'other' });
+  assert.equal(S.session('sess-ph'), undefined, 'phantom deleted at SessionEnd');
+  assert.match(K.saveInstruction('x', 'claude'), /universal-agent-context:uac-compressor[\s\S]*haiku/);
 });
 
 test('merge sessions into one: rows move, one combined card on next save', async () => {

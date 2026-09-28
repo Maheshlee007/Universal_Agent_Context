@@ -86,9 +86,11 @@ export function ensureSession({ host, session_id, cwd, transcript_path, model })
   return { s: session(session_id), created: true };
 }
 
+// Default session for MCP calls without session_id: the most recently ACTIVE one (a phantom from a window reload is newer
+// but idle, and must not receive another session's writes).
 export function currentSession(projectId) {
-  return get(`SELECT * FROM sessions WHERE project_id = ? AND status != 'ended' ORDER BY started_at DESC LIMIT 1`, projectId)
-    || get(`SELECT * FROM sessions WHERE project_id = ? ORDER BY started_at DESC LIMIT 1`, projectId);
+  return get(`SELECT * FROM sessions WHERE project_id = ? AND status != 'ended' ORDER BY COALESCE(last_active_at, '') DESC, started_at DESC LIMIT 1`, projectId)
+    || get(`SELECT * FROM sessions WHERE project_id = ? ORDER BY COALESCE(last_active_at, started_at) DESC LIMIT 1`, projectId);
 }
 
 export function setCapture(sid, state) {
@@ -117,17 +119,42 @@ export function unsavedSessions(projectId, exceptId) {
 }
 export const unsavedCount = (s) => get(`SELECT COUNT(*) AS n FROM events WHERE session_id = ? AND id > ? AND kind != 'pending'`, s.id, s.saved_event_id).n;
 
-// Card = latest summary + latest non-superseded checkpoint of a session.
+// Card = latest summary + latest non-superseded checkpoint of a session. A precompact snapshot (deterministic, no LLM)
+// never outranks a saved/auto/manual checkpoint; it is the card only when nothing else exists.
+// Snapshots (precompact / pause / tail after the last save) are deterministic, no LLM: shown as the card's "tail", never as the card.
+const SNAPS = `('precompact', 'pause', 'tail')`;
 export function card(sessionId) {
   const sm = get('SELECT * FROM summaries WHERE session_id = ? ORDER BY created_at DESC LIMIT 1', sessionId);
-  const cp = get('SELECT * FROM checkpoints WHERE session_id = ? AND superseded_by IS NULL ORDER BY ts DESC LIMIT 1', sessionId)
-    || get('SELECT * FROM checkpoints WHERE session_id = ? ORDER BY ts DESC LIMIT 1', sessionId);
+  const snap = get(`SELECT * FROM checkpoints WHERE session_id = ? AND trigger IN ${SNAPS} AND (COALESCE(goal, '') != '' OR files != '[]') ORDER BY ts DESC LIMIT 1`, sessionId);
+  const main = get(`SELECT * FROM checkpoints WHERE session_id = ? AND superseded_by IS NULL AND trigger NOT IN ${SNAPS} ORDER BY ts DESC LIMIT 1`, sessionId)
+    || get(`SELECT * FROM checkpoints WHERE session_id = ? AND trigger NOT IN ${SNAPS} ORDER BY ts DESC LIMIT 1`, sessionId);
+  const cp = main || snap;
   if (!sm && !cp) return null;
+  const cardAt = sm?.created_at ?? main?.ts;
+  const tail = main && snap && snap.ts > cardAt ? { at: snap.ts, trigger: snap.trigger, goal: snap.goal, note: snap.note, files: P(snap.files, []), broken: snap.broken } : null;
   return {
     summary_id: sm?.id ?? null, checkpoint_id: cp?.id ?? null, title: sm?.title ?? cp?.goal ?? null, body: sm?.body ?? '',
     quality: sm?.quality ?? 'llm', model: sm?.model ?? null, goal: cp?.goal ?? null, working: cp?.working ?? null, broken: cp?.broken ?? null,
     next_steps: P(cp?.next_steps, []), files: P(cp?.files, []), note: cp?.note ?? null, at: sm?.created_at ?? cp?.ts,
+    events_n: sm?.events_n ?? null, gaps: cp?.gaps ?? null, tail,
   };
+}
+
+// Phantom = a session nobody typed in: hosts start one on every window reload / panel open, and `/resume` switches
+// away from it. No prompts/tool activity, events, card, memories or title. Hidden from lists and numbering at once;
+// deleted at SessionEnd, else purged once ended or a day old (an idle open window keeps its row: no second start context).
+const PHANTOM = `(COALESCE(s.prompts, 0) = 0 AND s.last_active_at IS NULL AND s.title IS NULL
+  AND NOT EXISTS (SELECT 1 FROM events e WHERE e.session_id = s.id)
+  AND NOT EXISTS (SELECT 1 FROM summaries x WHERE x.session_id = s.id)
+  AND NOT EXISTS (SELECT 1 FROM checkpoints c WHERE c.session_id = s.id AND c.trigger NOT IN ${SNAPS})
+  AND NOT EXISTS (SELECT 1 FROM memories m WHERE m.source_session = s.id))`;
+export const isPhantom = (id) => !!get(`SELECT 1 AS x FROM sessions s WHERE s.id = ? AND ${PHANTOM}`, id);
+export function purgePhantoms(projectId, exceptId) {
+  const cutoff = new Date(Date.now() - 864e5).toISOString();
+  const ids = all(`SELECT s.id FROM sessions s WHERE s.project_id = ? AND s.id != ? AND (s.status = 'ended' OR s.started_at < ?) AND ${PHANTOM}`,
+    projectId, exceptId ?? '', cutoff).map((r) => r.id);
+  if (ids.length) tx(() => ids.forEach(deleteSessionRows));
+  return ids.length;
 }
 
 // Numbered newest-first list, the same numbering in CLI, dashboard, extension and `#uac continue <n>`.
@@ -138,12 +165,13 @@ export function listSessions(projectId, { limit = 50, active, all: withRolled } 
   return all(`SELECT s.*, (SELECT COUNT(*) FROM events e WHERE e.session_id = s.id AND e.kind != 'pending') AS events,
       (SELECT COUNT(*) FROM events e WHERE e.session_id = s.id AND e.id > s.saved_event_id AND e.kind != 'pending') AS unsaved,
       (SELECT COUNT(*) FROM memories m WHERE m.source_session = s.id) AS memories_created
-    FROM sessions s WHERE s.project_id = ? ${active ? "AND s.status != 'ended'" : ''} ${withRolled ? '' : 'AND s.rolled_into IS NULL'}
+    FROM sessions s WHERE s.project_id = ? ${active ? "AND s.status != 'ended'" : ''} ${withRolled ? '' : `AND s.rolled_into IS NULL AND NOT ${PHANTOM}`}
     ORDER BY s.started_at DESC, s.rowid DESC LIMIT ?`, projectId, limit)
     .map((s) => {
       const c = card(s.id);
-      // rolled-up sessions get no number, so #n is the same with or without --all
-      return { id: s.id, n: s.rolled_into ? null : ++visible, agent: s.agent, model: s.model, branch: s.branch, capture: s.capture, status: s.status,
+      const phantom = withRolled && isPhantom(s.id);
+      // rolled-up and phantom sessions get no number, so #n is the same with or without --all
+      return { id: s.id, n: s.rolled_into || phantom ? null : ++visible, phantom, agent: s.agent, model: s.model, branch: s.branch, capture: s.capture, status: s.status,
         started_at: s.started_at, ended_at: s.ended_at, title: s.title || c?.title || null, events: s.events, unsaved: s.unsaved,
         memories_created: s.memories_created, card: c, next: next.has(s.id), rolled_into: s.rolled_into ?? null,
         empty: !s.events && !c && !s.memories_created };
@@ -151,7 +179,7 @@ export function listSessions(projectId, { limit = 50, active, all: withRolled } 
 }
 // Accepts ids or 1-based numbers from listSessions (numbers count visible, non-rolled-up sessions).
 export function resolveSessionRefs(projectId, refs) {
-  const list = all('SELECT id FROM sessions WHERE project_id = ? AND rolled_into IS NULL ORDER BY started_at DESC, rowid DESC LIMIT 200', projectId).map((r) => r.id);
+  const list = all(`SELECT id FROM sessions s WHERE project_id = ? AND rolled_into IS NULL AND NOT ${PHANTOM} ORDER BY started_at DESC, rowid DESC LIMIT 200`, projectId).map((r) => r.id);
   return refs.map((r) => (/^\d+$/.test(String(r)) && !session(String(r)) ? list[Number(r) - 1] : String(r))).filter((id) => id && session(id));
 }
 
@@ -312,6 +340,8 @@ export function updateMemory(id, patch, { by = 'user', reason = 'edit' } = {}) {
   if (!m) throw new Error(`no memory ${id}`);
   const cols = ['title', 'body', 'why', 'type', 'scope', 'importance', 'confidence', 'pinned', 'muted', 'status', 'review_when', 'files', 'anchors'];
   const sets = [], vals = [];
+  // 'done' (a finished task) is stored as archived + resolved_by 'done:<who>': every 'not superseded/archived' filter already hides it
+  if (patch.status === 'done') { patch = { ...patch, status: 'archived' }; sets.push('resolved_by = ?', 'resolved_at = ?'); vals.push(`done:${by}`, now()); }
   for (const c of cols) if (patch[c] !== undefined) {
     sets.push(`${c} = ?`);
     vals.push(['files', 'anchors'].includes(c) ? J(patch[c]) : patch[c]);
@@ -338,6 +368,27 @@ export function verifyMemory(id, p) {
   run(`UPDATE memories SET last_verified_at = ?, verified_commit = ?, status = CASE WHEN status = 'stale' THEN 'active' ELSE status END WHERE id = ?`, now(), head, id);
   setHashes(id, p.root);
   return memory(id);
+}
+
+// Why an anchor won't resolve, with the likely fix (anchors are relative to the project root, not the file you had open).
+export function anchorHints(root, anchors = []) {
+  if (!root) return [];
+  const out = [];
+  let files;
+  for (const a of anchors || []) {
+    if (!a?.file) continue;
+    const f = String(a.file).replace(/\\/g, '/').replace(/^\.\//, '');
+    const abs = path.join(root, f);
+    if (fs.existsSync(abs)) {
+      try { if (a.symbol && !fs.readFileSync(abs, 'utf8').includes(a.symbol)) out.push(`anchor symbol \`${a.symbol}\` not found in ${f} (quote it exactly as written in the code)`); } catch {}
+      continue;
+    }
+    files ??= git(root, 'ls-files').split(/\r?\n/).filter(Boolean);
+    let cand = files.filter((x) => x.endsWith('/' + f));
+    if (!cand.length) cand = files.filter((x) => x.split('/').pop() === f.split('/').pop());
+    out.push(`anchor ${f} not found (paths are relative to the project root ${root.replace(/\\/g, '/')})${cand.length ? `; did you mean ${cand.slice(0, 3).join(' or ')}?` : ''}`);
+  }
+  return out;
 }
 
 export const relate = (a, b, rel) => run('INSERT OR IGNORE INTO memory_relations VALUES (?,?,?)', a, b, rel);

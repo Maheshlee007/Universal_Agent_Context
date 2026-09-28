@@ -13,7 +13,7 @@ Handoff = "continue from this session somewhere else". The receiving session loa
    - `working`: done and verified. `broken`: what fails now, with the exact symptom.
    - `next_steps`: ordered, concrete, each doable on its own.
    - `note`: what you'd tell the next dev: the gotcha, the current hypothesis, what not to retry. Quote identifiers verbatim.
-2. **Save the card.** Spawn `uac-compressor` with `session_id=<id>` (hosts without subagents: `uac_digest` → `uac_save`), so the card and knowledge are current.
+2. **Save the card.** Spawn `universal-agent-context:uac-compressor` (model haiku) with `session_id=<id>` (hosts without subagents: `uac_digest`, then follow its `how_to_save`), so the card and knowledge are current.
 3. **Mark it as next.** `uac_handoff({session_id})`. It returns the session number `n`.
 4. **Tell the user this, and nothing more:**
    ```

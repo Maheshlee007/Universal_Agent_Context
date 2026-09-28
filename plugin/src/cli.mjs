@@ -88,8 +88,8 @@ export async function main(argv) {
     }
     case 'sessions': {
       const rows = S.listSessions(proj().id, { active: o.active, all: o.all });
-      return out(rows, rows.map((r) => `#${String(r.n).padEnd(3)} ${(r.card?.title || r.title || `${r.agent} session, ${r.events} events, no card`).slice(0, 70).padEnd(70)} [${r.branch || '-'}] ${r.agent}${r.model ? `/${r.model}` : ''} · ${ago(r.started_at)}` +
-        `${r.card ? (r.card.quality === 'auto' ? ' · auto card' : ' · card') : ''}${r.unsaved ? ` · ${r.unsaved} unsaved` : ''}${r.capture === 'on' ? ' · REC' : ''}${r.next ? ' · NEXT' : ''}`).join('\n') || '(no sessions)');
+      return out(rows, rows.map((r) => `#${String(r.n ?? (r.phantom ? "-" : "~")).padEnd(3)} ${(r.card?.title || r.title || `${r.agent} session, ${r.events} events, no card`).slice(0, 70).padEnd(70)} [${r.branch || '-'}] ${r.agent}${r.model ? `/${r.model}` : ''} · ${ago(r.started_at)}` +
+        `${r.card ? (r.card.quality === 'auto' ? ' · auto card' : ' · card') : ''}${r.unsaved ? ` · ${r.unsaved} unsaved` : ''}${r.capture === 'on' ? ' · REC' : ''}${r.next ? ' · NEXT' : ''}${r.phantom ? ' · phantom (never used, auto-deleted)' : ''}`).join('\n') || '(no sessions)');
     }
     case 'name': {
       const p = proj(); const s = sess(p);
@@ -114,6 +114,8 @@ export async function main(argv) {
       const id = S.resolveSessionRefs(p.id, [args[0] || '1'])[0];
       const d = id && S.sessionDetail(id);
       if (!d) throw new Error(`no session ${args[0]}`);
+      // the raw log is the host's transcript (UAC deletes its own copy of the events on save)
+      if (o.raw) { const { rawLog } = await import('./import.mjs'); const log = rawLog(d.session); return out(log, log.map((e) => `${e.ts || ''} ${e.kind} ${e.tool || ''} ${e.target || ''} ${e.body || ''}`.replace(/\s+/g, ' ').slice(0, 300)).join('\n')); }
       const c = d.card;
       return out(d, [`session ${d.session.id} · ${d.session.agent}${d.session.model ? `/${d.session.model}` : ''} · branch ${d.session.branch || '-'} · recording=${d.session.capture} · ${d.session.status}`,
         `loaded: ${d.loaded ? JSON.stringify(d.loaded) : 'nothing'}`,
@@ -181,7 +183,7 @@ export async function main(argv) {
       const { importTranscript } = await import('./import.mjs');
       const r = importTranscript(S.session(id));
       K.autoCard(S.session(id));
-      return out(r, `imported ${r.events_imported} events into ${id} and built an auto card. In a session, "#uac save" or spawning uac-compressor with session_id=${id} turns it into a full card.`);
+      return out(r, `imported ${r.events_imported} events into ${id} and built an auto card. In a session, "#uac save" or spawning universal-agent-context:uac-compressor with session_id=${id} turns it into a full card.`);
     }
     case 'msg': {
       const p = proj();

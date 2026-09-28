@@ -43,12 +43,17 @@ Memory lines look like `- **Title**: body · \`computeRowPlan@src/layout.js:42\`
 
 When the user types `#uac save`, the Stop hook asks for a save (`[UAC] Save requested…`), or the work is done:
 1. If your host has subagents, delegate this to a cheap one. Otherwise do it yourself.
-2. `uac_digest({session_id})` returns `{upto_event_id, events, existing, diff_stat, recheck}`.
+2. `uac_digest({session_id})` — always pass `session_id` explicitly, don't rely on a default — returns `{base_event_id, upto_event_id, events, existing, diff_stat, recheck, open_tasks, duplicates, how_to_save}`.
    - `diff_stat` covers all changes since the session started, including subagent and background edits.
    - Every `recheck` item is a memory whose anchored files changed: verify it against the diff/file and emit `verify`, `update`, `supersede` or `conflict` for it.
-3. ONE `uac_save({session_id, upto_event_id, model:<your model id>, summary:{title, body ≤200 words}, checkpoint:{goal, working, broken, files, next_steps, note}, candidates:[…]})`.
+   - `open_tasks`: active tasks/warnings from this project. Close finished ones with `op:'done'`; update the ones still in progress.
+   - `duplicates`: same-type memory pairs whose titles overlap strongly. Merge real duplicates with `op:'supersede'` and `ids:[…]` (all the duplicate ids) instead of leaving them to grow forever.
+   - `how_to_save` is a self-contained recipe for step 3, in case you're not the compressor and this is the first time you're saving.
+3. ONE `uac_save({session_id, base_event_id, upto_event_id, model:<your model id>, summary:{title, body ≤200 words}, checkpoint:{goal, working, broken, files, next_steps, note, gaps}, candidates:[…]})`.
+   - Copy `session_id`, `base_event_id` and `upto_event_id` straight from the digest. `base_event_id` guards against two saves racing on the same session (a stale base is rejected); `upto_event_id` marks how far this save covers.
    - `summary.title`: verb + object + outcome, e.g. `Add per-user login rate limiter in src/auth.js (in-memory Map)`. Never generic.
-   - Candidates: durable knowledge only, reconciled against `existing`. `op`: add | update(id) | supersede(id) | conflict(id) | verify(id) | noop. At most 20, identifiers verbatim, `anchors` + `files` on code items, honest `confidence`, no secrets.
+   - `checkpoint.gaps`: what you left out or didn't verify. Shown to the next session as "Not in this card".
+   - Candidates: durable knowledge only, reconciled against `existing`. `op`: add | update(id) | supersede(id, ids?) | conflict(id) | verify(id) | done(id) | noop. `ids:[…]` on `supersede` merges several duplicate memories into one. At most 20, identifiers verbatim, `anchors` + `files` on code items, honest `confidence`, no secrets.
 4. Report one line: `UAC saved: "<title>" · N accepted, M low-confidence, K conflicts, V verified`.
 
 **Pause:** `uac_checkpoint({…})`, then `uac_capture({state:"paused"})`. **Stop:** save, then `uac_capture({state:"off"})`.

@@ -79,12 +79,18 @@ const V3_COLUMNS = [
   ['memories', 'anchors TEXT'], ['memories', 'muted INTEGER DEFAULT 0'], ['memories', 'source_model TEXT'],
   ['memories', 'resolved_by TEXT'], ['memories', 'resolved_at TEXT'], ['memories', 'verified_commit TEXT'],
   ['checkpoints', 'superseded_by TEXT'], ['summaries', 'quality TEXT'], ['summaries', 'model TEXT'],
+  // v0.4: prompts = count of prompts typed, last_active_at = last prompt/tool (both even when not recording; no text)
+  // → tell real sessions from phantoms and pick the MCP default session;
+  // save_asked = last event id at which the Stop hook asked for a save (no re-ask every turn if a save failed)
+  ['sessions', 'prompts INTEGER DEFAULT 0'], ['sessions', 'last_active_at TEXT'], ['sessions', 'save_asked INTEGER DEFAULT 0'], ['summaries', 'events_n INTEGER'],
+  ['checkpoints', 'gaps TEXT'],
 ];
 function migrate() {
   for (const [t, col] of V3_COLUMNS) { try { db.exec(`ALTER TABLE ${t} ADD COLUMN ${col}`); } catch { /* exists */ } }
   db.exec(`CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, project_id TEXT, from_session TEXT, from_agent TEXT,
       from_branch TEXT, recipient TEXT, text TEXT, created_at TEXT);
-    CREATE TABLE IF NOT EXISTS message_reads(message_id TEXT, session_id TEXT, PRIMARY KEY(message_id, session_id));`);
+    CREATE TABLE IF NOT EXISTS message_reads(message_id TEXT, session_id TEXT, PRIMARY KEY(message_id, session_id));
+`);
 }
 
 // Keep the -wal file from growing forever (called after saves and at session end).

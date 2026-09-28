@@ -61,7 +61,7 @@ Each memory line looks like:
 
 Save when the work is done, before a long pause, or when the header/Stop hook says so:
 - The user types `#uac save`, or runs `/universal-agent-context:uac save`.
-- Either way: spawn the `uac-compressor` subagent with `session_id=<id>` and relay its one-line result.
+- Either way: spawn the `universal-agent-context:uac-compressor` subagent (model haiku) with `session_id=<id>` and relay its one-line result. If the agent is not listed or the spawn fails, call `uac_digest` yourself and follow its `how_to_save`.
 - Hosts without subagents: do its steps yourself: `uac_digest` → one `uac_save`.
 - If the Stop hook says `[UAC] Save requested…`, do it, then finish.
 

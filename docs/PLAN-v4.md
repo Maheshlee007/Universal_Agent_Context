@@ -1,0 +1,49 @@
+# UAC v0.4 plan: triage of UAC-improvements2.md + live findings (2026-09-28)
+
+Inputs: `docs/UAC-improvements2.md` (another LLM's head-to-head test against UACE), the user's own observations, UACE research (github.com/shivamgupta1319/UACE), and the live store `~/.uac/uac.db` inspected during this session.
+Premise: about 90% of UAC's readers are LLMs. Every change is judged by "does the next agent act better on it", not "does it look nicer".
+
+## A. The user's observations (all confirmed in the live DB)
+
+| # | Observation | Root cause found | Fix |
+|---|---|---|---|
+| U1 | Empty stale sessions appear after a window reload | The VS Code panel starts a session on reload/open (SessionStart, new id); the user then resumes the old conversation, so the new id never gets a prompt. Live: `41506ef7` (ended after 9 s) and `24e252a1` (never ended). Worse, `/compact` in that panel wrote an **empty precompact checkpoint** into `24e252a1`, so it counted as having a card and was injected as "Continuing from #1" with no content | `sessions.prompts` counter (counts prompts even when not recording; stores no text). A session nobody typed in (0 prompts, 0 events, no card, no memories, no title) is a *phantom*: hidden from lists and numbering, deleted at SessionEnd, purged at the next start once ended or older than 30 min. The first prompt re-creates it anyway if it was purged while open. Precompact snapshots are not written when nothing was recorded. The default "continue from" card must have content |
+| U2 | Are subagent responses handled? | Partly. Foreground: PostToolUse (Agent, first 200 chars) + SubagentStop (full, ≤2000). Background: SubagentStop fires too, **and** the host injects `<task-notification>` / `<agent-message>` as a user turn; UAC recorded those as **USER prompts** (live events 337–339), used them as goal/title candidates, and would even run a `uac:` control found at the start of a line inside a subagent's report (subagent text carries no user authority). The compaction summarizer also fires SubagentStop, so the whole `<analysis>` compaction summary was stored as a "subagent result" (event 341) | Prompts that are host injections (`<task-notification>`, `<agent-message>`, `<system-reminder>`-only, `<local-command-…>`) are not user prompts: no control parsing, no title, recorded as a short `notice` event (the full result already comes via SubagentStop). Compaction summaries are skipped |
+| U3 | Save/compression launches the default model, not Haiku | The plugin's agent is namespaced: `universal-agent-context:uac-compressor`. The Stop hook said `subagent_type "uac-compressor"`, which does not exist, so the main agent falls back to a general-purpose agent on the **default model without the compressor instructions**. Same root cause as feedback #6 (that agent "thought the project uses UACE", looked for git, gave up) | Exact type name, `model: "haiku"` in the instruction, and `uac_digest` returns a self-contained `how_to_save` recipe, so even a general-purpose agent (or the main agent) saves correctly on the first try |
+| U4 | Knowledge tab is cluttered | Every type group is expanded | Accordion by type (`<details name>`, one open at a time; first group open), header shows count + ✓/⚠/✗ counts |
+| U5 | In the same session, after a card is written, is later work included? | Yes by design: a save deletes the events it covered; new events keep recording; the next save gets `previous_card` and REPLACES the card for the whole session. **Bug found:** a later precompact snapshot outranked the saved checkpoint in `card()` (live: `c-d3a781` over `c-bf064d`), so the card showed a harness message as its goal. Also after compaction only that snapshot was re-injected, not the session's own saved card | `card()` prefers save/auto/manual checkpoints over precompact ones. After compaction, re-inject this session's own card + a snapshot built from unsaved events |
+
+## B. UAC-improvements2.md, point by point
+
+| Point | Decision | Why / how |
+|---|---|---|
+| 1 Type/scope invisible in bootstrap | **Do** | Items are still chosen by score within the budget, then rendered grouped: Must not violate · Decisions · Warnings · Lessons · Architecture · Facts · Open tasks · Preferences (yours, all projects). Branch items tagged `[branch x]` |
+| 2 Tasks can't be closed; `uac_update` can't change type | **Do** | `uac_update` takes `type` and `status` (`done` / `active` / `archived`), body optional. New status `done` (not loaded, kept in history). Compressor op `done` |
+| 3 No limit on bootstrap | **Do (small)** | A token budget already exists (2K normal / 6K deep, "_N more not shown_"), the doc missed it. Expose `limit` (max items) and `budget_tokens` in the tool schema |
+| 4 Stale tasks never reconciled | **Do** | Digest adds `open_tasks` (active tasks/warnings, not only anchor-touched ones); compressor must close finished ones (`op:'done'`) or update them |
+| 5 Anchor ✗ without a hint; alternates | **Do hint / skip alternates** | propose/update/verify return "anchor `package.json` not found; did you mean `uac-plugin-test/package.json`?" (git ls-files suffix/basename match). Alternates: skipped. Anchor one instance per memory, or both as required; an "any of" flag adds schema and rules for a rare case |
+| 6 Compressor fails with the bare prompt | **Do** | Root cause U3, not the prompt size. Plus the self-describing digest and "first call is always uac_digest; no git needed; ignore other memory tools" in the agent file |
+| 7 Raw events hard-deleted | **Do, via the host transcript** | Changed after review: no second copy in UAC. The host transcript (`sessions.transcript_path`) is the full-fidelity original and is already on disk; a gzip archive would only stretch the retention of text `redact` may miss. `uac session <n> --raw` and `uac_get {ids:[session], raw:true}` read it (redacted, own project only). Never loaded by default |
+| 8 Knowledge store only grows | **Do** | Compressor op `merge {ids:[…], title, body}` → one memory, sources superseded. Digest adds `duplicates`: same-type pairs whose titles overlap strongly (Jaccard), so the reviewer sees them |
+| Extra: verify on PostToolUse | **Skip** | Freshness is already computed from content hashes on every load (no call needed; an edit shows ⚠ immediately at the next load) and the save re-checks every touched anchor. PostToolUse is async: it can't talk to the model, and hashing on every tool call adds latency for no reader |
+| Extra: "why did it know that" | **Do** | Header line: "Loaded: 2 cards, 11 knowledge items (~1.8K tokens) · 3 not shown". `uac_why` already explains single items |
+| Extra: preference applies_when | **Instruction, no field** | The reader is an LLM reading text: a field it reads the same way as a sentence adds nothing. The compressor/propose rules require preference bodies to state where they apply and where not; rendered under "Preferences (apply only where stated)" |
+| Extra: SessionStart should offer a choice | **State the default, don't ask** | The user decided in v0.3 (feedback 6/24): no questions at start, autonomous runs must not block. The start context now says what was loaded and the one-line override (`continue <n>` / `fresh` / `deep`) |
+| Extra: card size vs decisions; say what was dropped | **Do** | Summary body scales with decisions (≤200 words, up to ~500 for decision-dense sessions); `checkpoint.gaps` = what was left out or not verified, rendered as "Not in this card:"; card meta shows "from N events" |
+| Extra: link, don't merge, related sessions | **Do (automatic)** | The sessions a session loaded are its parents: the card shows "continues #3". Resolving a task links via the task memory (op `done`). Explicit merge/rollup stay for users who want them |
+| Priority 6: verify hooks really fire | **Done here** | Live DB evidence: PostToolUse (tool events), PreCompact (checkpoints `c-d3a781`, `c-f6c141`), SubagentStop (events 334/335/341). This verification is what found U1/U2/U5 |
+| Priority 7: dashboard grouped by type/scope/verification | **Do** | U4 accordion + scope pill + freshness counts per group |
+| Priority 8: cross-client rules files | **Skip, with reason** | The doc assumed UAC is Claude-only; it ships hook adapters for Claude, Gemini, Codex, Cursor, Copilot and Antigravity that inject the same context live. Static rules files would duplicate that context (double tokens) and go stale. PROTOCOL.md stays for hook-less hosts |
+
+## C. From UACE
+- **Take:** `limit` (B3). A cheap "commits since this card" line under each loaded card (humans commit between agent sessions; the next agent should know).
+- **Skip:** file watcher (PostToolUse + `git diff` since session start already see every edit, including subagents'); 3-layer untyped memory; regex transcript mining; block-merged rules files (see Priority 8).
+
+## D. Other live-environment cases found while tracing
+- **Stop-hook nag loop:** if a save fails, every later Stop blocks again (unsaved stays ≥ 40). Now it re-asks only after another 40 events.
+- **Controls inside subagent reports** (U2) and **harness text as the session goal/title** (U2/U5): fixed at the source (prompt classification).
+- **Two windows on one project:** purging a phantom that is actually open is harmless. Its first prompt re-creates it and gets the start context.
+- **Manual/off sessions have 0 events but were real:** the `prompts` counter keeps them (and the "ran without recording, `uac import`" hint) from being treated as phantoms.
+
+## E. Verification plan
+Live, in the codebase (not only unit tests): run hooks with real payload shapes against an isolated `UAC_HOME` and against a copy of the real DB, reproduce each live bug (phantom, precompact card, task-notification prompt, compaction summary), confirm the fix, then `npm test` once at the end.

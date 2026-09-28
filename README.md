@@ -14,6 +14,8 @@ You deal with two things:
 
 There are no size menus and no questions at every start. The only question is asked once per project: should UAC be **automatic**, **manual** or **off**?
 
+Every start context begins with one line: `Loaded: N cards · M items · ~T tokens`, so you always know how much you got and can ask for more (`#uac deep`) or less (`#uac fresh`). Knowledge is grouped by type (decisions, warnings, constraints, tasks…) in the dashboard, one group open at a time. Finished tasks are marked `done` (compressor op `done`, or `uac_update {status:'done'}`): kept in history, not loaded again.
+
 | Mode | What happens |
 |---|---|
 | automatic | Loads context, records the session, saves by itself (the agent's own cheap subagent writes the card) |
@@ -68,6 +70,7 @@ In Claude Code the same actions exist as `/universal-agent-context:uac <action>`
   - `uac sessions`, `uac session 3`, `uac next 3`
   - `uac rm 4 --dry-run`, `uac rm 4`, `uac rm --empty`
   - `uac review` (interactive y/n/edit), `uac projects`, `uac backup`
+  - `uac session 3 --raw` shows the raw log from the host's own transcript (UAC deletes its own copy once a session is saved)
   - `uac merge 4 5 --into 3` merges sessions into one; `uac rollup --all` compresses many into one card; `uac name "…"`
 
 ## Resuming vs continuing (token cost)
@@ -89,4 +92,4 @@ The saving subagent is the reviewer:
 - [PLAN-v3.md](docs/PLAN-v3.md): the v0.3 rethink and a decision on every piece of feedback
 
 ## Tests
-`npm test` runs 34 tests (about 2 minutes) covering the full flow: hooks, capture, save, knowledge, freshness, branches, messages, naming, merge, rollup, same-session continuation, deletes, dashboard API, MCP, and all six adapters.
+`npm test` runs 35 tests (about 2 minutes) covering the full flow: hooks, capture, save, knowledge, freshness, branches, messages, naming, merge, rollup, same-session continuation, phantom sessions, host-injected prompts, done tasks, save guard, deletes, dashboard API, MCP, and all six adapters.

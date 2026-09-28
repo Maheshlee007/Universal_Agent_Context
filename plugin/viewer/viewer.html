@@ -64,6 +64,12 @@ pre,.mbody{white-space:pre-wrap;word-break:break-word;margin:4px 0;font:12px/1.4
 ul{margin:4px 0;padding-left:18px}
 td.ev div{max-height:7em;overflow:auto;white-space:pre-wrap;word-break:break-word;font:12px/1.4 ui-monospace,Consolas,monospace}
 details>summary{cursor:pointer;color:var(--mut);margin-top:6px}
+details.acc{border:1px solid var(--bd);border-radius:6px;background:var(--card);margin-bottom:6px}
+details.acc>summary{margin:0;padding:7px 10px;color:var(--fg);display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+details.acc>summary b{text-transform:capitalize}
+details.acc[open]>summary{border-bottom:1px solid var(--bd)}
+details.acc>:not(summary){margin:8px 10px}
+details.acc .card{border:0;padding:0;margin:0}
 h2{font-size:13px;margin:18px 0 6px;text-transform:uppercase;letter-spacing:.04em}
 h4{margin:10px 0 4px;font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
 label.mode{display:block;padding:6px 0}
@@ -104,7 +110,7 @@ const openEvents = new Set();  // expanded raw-events lists
 const dcache = new Map();      // session id -> /api/sessions/:id detail
 const sf = { branch: '', rolled: false, into: '', notice: null };
 const picked = new Set();      // session ids ticked for merge / rollup
-const kf = { q: '', all: false };
+const kf = { q: '', all: false, open: null }; // open = the one expanded knowledge section
 
 function readHash() {
   const [t, raw] = location.hash.slice(1).split('/');
@@ -264,7 +270,7 @@ const VIEWS = {
       if (!force && s2 === sig) return;
       sig = s2; ss = list;
       // number visible (non-rolled-up) sessions only, matching `#uac continue <n>` even when all=1
-      let k = 0; ss.forEach(s => { s.n = s.rolled_into ? null : ++k; });
+      let k = 0; ss.forEach(s => { s.n = s.rolled_into || s.phantom ? null : ++k; });
       for (const id of picked) if (!byId(id) || byId(id).rolled_into) picked.delete(id);
       const nextIds = Array.isArray(nx.sessions) ? nx.sessions : ss.filter(s => s.next).map(s => s.id);
       const chosen = nextIds.map(id => ss.find(s => s.id === id) || { id, n: '?', title: id });
@@ -304,23 +310,32 @@ const VIEWS = {
     const reload = () => render();
     const proposed = arr(rv.proposed), conflicts = arr(rv.conflicts);
 
+    // Accordion: every section is a <details> in one exclusive group (one open at a time). Default open: what needs you,
+    // else the first knowledge group; a search opens all matching groups; the user's last choice is remembered.
+    const decide = proposed.length + conflicts.length;
+    const acc = (key, title, extra, kids, force) => {
+      const d = h('details', { class: 'acc', name: kf.q ? null : 'uac-knowledge', open: force || kf.open === key },
+        h('summary', null, h('b', null, title), extra), kids);
+      d.addEventListener('toggle', () => { if (d.open) kf.open = key; else if (kf.open === key) kf.open = ''; });
+      return d;
+    };
+    if (kf.open == null) kf.open = decide ? 'decide' : '';
+
     // 1. needs your decision
-    out.append(h('h2', null, `Needs your decision (${proposed.length + conflicts.length})`));
-    if (!proposed.length && !conflicts.length) out.append(empty('Nothing waiting. Confident, non-conflicting items are accepted automatically.'));
-    proposed.forEach(m => out.append(reviewCard(m, null, reload)));
-    conflicts.forEach(({ memory, other }) => out.append(h('div', { class: 'split' },
-      reviewCard(memory, 'New (conflicts with the existing memory)', reload), other ? memCard(other, 'Existing') : empty('(other side missing)'))));
+    out.append(acc('decide', `Needs your decision (${decide})`, decide ? pill('action needed', 'bad') : null, [
+      !decide ? empty('Nothing waiting. Confident, non-conflicting items are accepted automatically.') : null,
+      proposed.map(m => reviewCard(m, null, reload)),
+      conflicts.map(({ memory, other }) => h('div', { class: 'split' },
+        reviewCard(memory, 'New (conflicts with the existing memory)', reload), other ? memCard(other, 'Existing') : empty('(other side missing)')))]));
 
     // 2. recently auto-accepted
-    out.append(h('h2', null, `Recently auto-accepted (${auto.length})`));
-    if (!auto.length) out.append(empty('Nothing accepted automatically in the last 7 days.'));
-    else out.append(h('div', { class: 'card' }, auto.map(m => h('div', { class: 'mem' },
+    out.append(acc('auto', `Recently auto-accepted (${auto.length})`, null, !auto.length ? empty('Nothing accepted automatically in the last 7 days.') : h('div', { class: 'card' }, auto.map(m => h('div', { class: 'mem' },
       h('div', null, h('b', null, m.title || '(untitled)'), pill(m.type), m.source_model ? pill('by ' + m.source_model) : null),
       h('div', { class: 'mbody' }, str(m.body)),
       h('div', { class: 'meta' }, 'accepted by ', m.resolved_by || '?', m.resolved_at ? ' · ' + ago(m.resolved_at) : ''),
       h('div', { class: 'row' },
         h('button', { title: 'Archive it: it stops being loaded', onclick: act(async () => { await api(`/api/memories/${enc(m.id)}`, 'PUT', { status: 'archived' }); reload(); }) }, 'Undo'),
-        twoStep('Wrong', 'Confirm: mark as wrong', async () => { await api(`/api/memories/${enc(m.id)}`, 'PUT', { status: 'superseded' }); reload(); }))))));
+        twoStep('Wrong', 'Confirm: mark as wrong', async () => { await api(`/api/memories/${enc(m.id)}`, 'PUT', { status: 'superseded' }); reload(); })))))));
 
     // 3. project knowledge, grouped by type
     let t;
@@ -333,9 +348,18 @@ const VIEWS = {
     }
     if (!rows.length) out.append(empty(kf.q ? 'Nothing matches.' : 'No project knowledge yet. Run /uac init in a session to seed it.'));
     const types = [...new Set([...TYPES, ...rows.map(m => m.type)])];
+    const focusType = rows.find(m => m.id === focusMem)?.type;
+    if (!kf.open && !decide) kf.open = 'type:' + (focusType || types.find(ty => rows.some(m => m.type === ty)));
     for (const ty of types) {
       const g = rows.filter(m => m.type === ty);
-      if (g.length) out.append(h('h4', null, `${ty} (${g.length})`), h('div', { class: 'card' }, g.map(m => memRow(m, reload))));
+      if (!g.length) continue;
+      const n = (st) => g.filter(m => m.freshness?.state === st).length;
+      const scopes = [...new Set(g.map(m => m.scope))].filter(sc => sc && sc !== 'project');
+      out.append(acc('type:' + ty, `${ty} (${g.length})`, [
+        n('verified') ? pill('✓ ' + n('verified'), 'ok') : null, n('changed') ? pill('⚠ ' + n('changed'), 'warn') : null,
+        n('missing') ? pill('✗ ' + n('missing'), 'bad') : null, g.some(m => m.status === 'archived' && /^done/.test(m.resolved_by || '')) ? pill('done: ' + g.filter(m => /^done/.test(m.resolved_by || '')).length) : null,
+        scopes.map(sc => pill(sc + ' scope', 'acc'))],
+        h('div', { class: 'card' }, g.map(m => memRow(m, reload))), !!kf.q || ty === focusType));
     }
     if (q.value) queueMicrotask(() => { q.focus(); q.setSelectionRange(q.value.length, q.value.length); });
   },

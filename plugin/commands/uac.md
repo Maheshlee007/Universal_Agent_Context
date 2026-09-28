@@ -21,7 +21,7 @@ First word of `$ARGUMENTS` = action, the rest = arguments. No action = `status`.
 
 **resume** — `uac_capture({state:"on"})`. Reply `UAC recording`.
 
-**save** — Spawn the `uac-compressor` subagent (Agent/Task tool) with the prompt `Save UAC session <session_id>`. Relay its one-line result. Don't summarize the session yourself.
+**save** — Spawn the `universal-agent-context:uac-compressor` subagent (Agent tool, `model: "haiku"`, foreground) with the prompt `session_id=<session_id>`. If it is unavailable or fails, call `uac_digest` yourself and follow its `how_to_save`. Relay its one-line result. Don't summarize the session yourself.
 
 **stop** — Do **save**, then `uac_capture({state:"off"})`. Reply `UAC stopped - saved and off`.
 

@@ -14,7 +14,7 @@ UAC keeps two things:
 It does not need to know. The **hook** does the work.
 - When a session starts, the UAC hook puts the context into the chat by itself. No tool call is needed.
 - Some tools have no start hook (Antigravity), or the start hook was killed by a timeout. Then the hook adds the context to your **first prompt**.
-- The save instruction is plain text. It is in the start context and in the Stop hook. It says what to do on that host: "spawn the uac-compressor subagent" on Claude, or "call `uac_digest`, then `uac_save`" on other tools.
+- The save instruction is plain text. It is in the start context and in the Stop hook. On Claude it names the agent exactly (`universal-agent-context:uac-compressor`, `model: haiku`) so the host doesn't fall back to your default model. On other tools, or if the subagent can't be spawned, it says: call `uac_digest`, then follow the `how_to_save` recipe it returns in one `uac_save` call.
 - For tools without hooks, paste [PROTOCOL.md](PROTOCOL.md) into `AGENTS.md`, `GEMINI.md` or the rules file.
 - If no LLM ever saves, UAC still builds an **automatic card** from the recorded events. No LLM is used for it, so nothing is lost.
 
@@ -69,11 +69,33 @@ Yes, it is replaced. No, you do not compress again.
 - A successful save writes the card, then **deletes the raw events** of that session.
 - The card and the knowledge stay. The old checkpoints this session loaded on the same branch are marked "superseded" by the new card.
 
+### Why did saving launch my default model instead of Haiku?
+UAC's agent is namespaced (`universal-agent-context:uac-compressor`), and an older save instruction spawned it by its short name, which doesn't exist — so the host fell back to a general-purpose agent on your default model, without the compressor's instructions.
+Fixed: the instruction now spawns the exact namespaced agent with `model: haiku`. As a backstop, `uac_digest` also returns a `how_to_save` recipe, so even a plain general-purpose agent (or the main agent, if no subagent is available) can save correctly on the first try.
+
+### Can I see the raw log after a save?
+Yes. `uac session <n> --raw` (CLI) or `uac_get {ids:[<session>], raw:true}` (MCP) shows it.
+UAC deletes its own copy of a session's events once they're saved into a card, but the log still exists in the **host's own transcript file**, and that's where `--raw` reads it from.
+
 ### What happens when I close a session without saving, and start a new one in the same project?
 1. The unsaved session gets an **automatic card** (no LLM). It uses the prompts, the changed files and the git diff.
 2. The new start context tells you this.
-3. Type `#uac save <n>` to let the agent write a full card for that old session (it spawns uac-compressor for it).
+3. Type `#uac save <n>` to let the agent write a full card for that old session (it spawns `universal-agent-context:uac-compressor` on Haiku for it, or falls back to `uac_digest` + `uac_save` if the subagent can't run).
 4. Sessions with nothing in them are marked **"empty · can delete"** in the dashboard. "Delete empty sessions" removes them all.
+
+### Why did empty sessions appear after a window reload?
+A reload or a re-opened panel starts a **new** session id (SessionStart fires again), even though you then resume the old conversation. Nobody ever types into the new one.
+- These are **phantom sessions**: no prompts, no events, no card, no title. UAC hides them from lists and numbering right away.
+- They are deleted when they end, or purged automatically after about a day if the window stays open.
+- If you had a one-shot "continue from #n" pick queued for that phantom, the first **real** prompt in any session consumes it, so it isn't lost or duplicated.
+- A session with real activity but 0 recorded events (you ran it with recording off) is **not** a phantom: it still counts prompts, so it stays visible with an "ran without recording, `uac import`" hint.
+
+### Are subagent results recorded?
+Yes, both kinds:
+- **Foreground** subagents: the tool call shows up at `PostToolUse` (first 200 characters), then the full result at `SubagentStop`, tagged with the agent type.
+- **Background** agents: `SubagentStop` fires the same way when they finish.
+- What is **not** recorded as a user prompt: host notifications like `<task-notification>` or `<agent-message>`. They arrive as a chat turn, but they aren't something you typed — no `#uac` control parsing, no title/goal from them, just a short `notice` event (the full result already came through `SubagentStop`).
+- The host's own **compaction summary** (it also fires `SubagentStop`) is skipped entirely — it's harness bookkeeping, not a subagent result worth a card.
 
 ### How are sessions named?
 - **Automatic:** from your first prompt.
@@ -127,13 +149,17 @@ You don't tick memories any more.
 - If one memory is noise, you can **mute** it (kept, never loaded), **pin** it (loaded first), **edit** or **delete** it. You never need to.
 
 ### Who reviews the memories? Must I review everything? How do I know what is correct?
-The **saving subagent is the reviewer** (on Claude: uac-compressor, usually Haiku).
+The **saving subagent is the reviewer** (on Claude: `universal-agent-context:uac-compressor`, model Haiku).
 - It compares new findings with the existing knowledge and the git diff.
 - Items with confidence **≥ 0.7** and no conflict are **accepted automatically**, in every mode.
 - **Only conflicts and uncertain items wait for you.** You see them in "Needs your decision" (dashboard), `uac review` (CLI) or the Review tree (VS Code).
 - Every memory records **who** accepted it (`auto-policy`, `compressor`, `user-dashboard`, `user-cli`, `user-tool`), **when**, and **which model** wrote it.
 - "Recently auto-accepted" in the dashboard shows the last 7 days. You can undo there.
 - To know what is correct: every memory points at code (`computeRowPlan@src/layout.js:42`) and shows ✓ / ⚠ / ✗. Agents are told to treat memory as **claims to check**, not facts.
+
+### How do I close a finished task?
+The compressor emits `op:'done'` for it on the next save, or you (or any agent) call `uac_update({id, status:'done'})` directly.
+A `done` task is kept in history but not loaded into future sessions, same as archived items.
 
 ### After an enhancement or new commits, does the AI update the knowledge, or does it go stale?
 The AI updates it.
@@ -251,6 +277,8 @@ Yes. It's the same session, and new work is recorded there.
 - On the next save, the compressor gets the existing card (`previous_card`) and writes ONE updated card for the whole session: the old parts that are still true plus the new work.
 - There is no second card and no new session.
 - Older checkpoints of that session are marked superseded.
+- Until the next save, work after the last card shows in the start context as an "**After this card (unsaved)**" tail, so nothing looks lost.
+- If the host compacts the conversation in between, this session's own card (not just a generic snapshot) is re-injected afterward, along with that unsaved tail.
 
 **I didn't save, closed it, and came back much later with `claude --resume`. What happens?**
 - The session is marked active again.

@@ -132,6 +132,19 @@ Sessions that end without an LLM save get a deterministic **auto card** (first p
 5. **The session model was overwritten** by the compressor's model on save. Fix: the card records the compressor's model; the session keeps its own.
 6. **Sessions were listed as "(untitled)".** Fix: labels fall back to the title, then "agent session, N events, no card", always with age.
 
+## v0.4 changes
+
+Full reasoning and the point-by-point triage: [PLAN-v4.md](PLAN-v4.md).
+
+- **Phantom sessions.** Hosts start a new session id on a window reload or re-opened panel, even though the user resumes the old conversation into a different session. A session with no prompts, no events, no card and no title is a phantom (`PHANTOM` query, `isPhantom`, `store.mjs`): hidden from lists/numbering right away, deleted at `SessionEnd`, and purged (`purgePhantoms`) once ended or a day old. `sessions.prompts` (incremented on every real prompt, even in `manual`/`off` mode) is what tells a phantom apart from a real session that just wasn't recorded.
+- **Host-injected prompt classification.** `hook.mjs` recognizes turns the host injects rather than the user typing (`<task-notification>`, `<agent-message>`; `INJECTED` regex, plus `stripReminders` for `<system-reminder>`/local-command echoes). These are stored as a short `notice` event, not a `prompt`: no `#uac` control parsing, no title/goal candidate. The host's own compaction-summary `SubagentStop` is skipped by content heuristic (marked `ponytail:` — switch to an explicit agent-type check if the host ever exposes one).
+- **Snapshot vs. card precedence, and the unsaved tail.** `card()` (`pack.mjs`) prefers `save`/`auto`/`manual` checkpoints over a `precompact` snapshot, so a mid-session compaction no longer outranks the session's real card. After compaction, the start context re-injects this session's own card plus a snapshot built from events since the last save (the "After this card (unsaved)" tail).
+- **Save concurrency guard.** `uac_digest` returns `base_event_id` alongside `upto_event_id`; `save()` (`pack.mjs`) rejects a save whose `base_event_id` is behind the session's current `saved_event_id`, so two saves racing on the same session (e.g. a manual `#uac save` and an automatic Stop-hook save) can't silently clobber each other.
+- **Stop-hook backoff.** `sessions.save_asked` records the event id at which the Stop hook last asked for a save. It only re-asks once another `STOP_THRESHOLD` (40) events have piled up, instead of blocking on every Stop after one failed/skipped save.
+- **`sessions.prompts` / `last_active_at`.** Real activity now updates `last_active_at` (throttled to once a minute) independent of recording state, so "most recently active session" (the MCP default when no `session_id` is given) and phantom detection both work even in `manual`/`off` mode.
+- **Grouped bootstrap.** `startContext` (`pack.mjs`) renders project knowledge grouped under headings (Must not violate · Decisions · Warnings · Lessons · Architecture · Facts · Open tasks · Preferences) instead of one flat list, and opens with `Loaded: N cards · M items · ~T tokens` so the reader knows what it got before reading it.
+- **`how_to_save`.** `uac_digest` embeds a self-contained save recipe in its response, so a general-purpose agent (or the main agent, if the compressor subagent can't be spawned) can save correctly without reading any other doc.
+
 ## Known limitations
 1. **Exe dashboard:** anything that waits on the event loop (the HTTP server, timers) hangs inside the Node single executable on this Windows machine. Even a 5-line server hangs, so it's the runtime, not UAC. Use `node plugin/bin/uac.mjs view`.
 2. **Gemini live test blocked:** headless `gemini -p` hangs on this machine even with UAC's hooks removed. The install and the adapter are unit-tested only.
