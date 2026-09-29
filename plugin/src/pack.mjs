@@ -213,7 +213,7 @@ export function bootstrap(s, p, opts = {}) {
 
   const mode = p.mode || 'first run';
   const cur = s && S.session(s.id);
-  let out = `# UAC · ${p.name} · branch \`${p.branch || '-'}\`${here ? ` · package \`${here}\` (other packages' knowledge not loaded)` : ''} · mode ${mode} · ${cur ? `${cur.capture === 'on' ? 'recording ON' : 'not recording'} · this session ${cur.seq ? `#${cur.seq} ` : ''}${S.shortId(cur.id)} (session_id=${cur.id})` : ''}\n` +
+  let out = `# UAC ${VERSION} · ${p.name} · branch \`${p.branch || '-'}\`${here ? ` · package \`${here}\` (other packages' knowledge not loaded)` : ''} · mode ${mode} · ${cur ? `${cur.capture === 'on' ? 'recording ON' : 'not recording'} · this session ${cur.seq ? `#${cur.seq} ` : ''}${S.shortId(cur.id)} (session_id=${cur.id})` : ''}\n` +
     `Memory = claims, not facts: ✓ matches the code at its anchor · ⚠ file changed since · ✗ anchor gone · (no anchor) can't be checked. Check one only when your task touches it, at its anchored path (relative to the project root); then uac_verify {ids} or uac_update.\n`;
   const knowledgeTokens = [...mustTexts, ...knowTexts].reduce((a, i) => a + tokens(i.text), 0);
   if (!cards.length && knowledgeTokens < NEAR_EMPTY_TOKENS)
@@ -260,17 +260,17 @@ export function bootstrap(s, p, opts = {}) {
 // ---------- version consistency (hooks vs installed plugin vs MCP server) ----------
 // Running sessions keep the old hooks and MCP server until /reload-plugins or a restart, and a second install source (the
 // VS Code extension's bundle) can serve the MCP server from another version. Each process stamps its own version on the
-// session it serves; any mismatch, or a newer installed version, is said once in plain words. A plugin cannot run
-// /reload-plugins itself: the reader tells the user.
+// session it serves; any mismatch, or a newer installed version, is said once per distinct mismatch (the key is kept in
+// sessions.ver_warned) in plain words. A plugin cannot run /reload-plugins itself: the reader tells the user.
 export function versionNotes(s, host) {
-  const out = [];
   const inst = host === 'claude' ? claudeInstalled() : null;
-  if (inst && semverCmp(inst.version, VERSION) > 0)
-    out.push(`⚠ UAC ${inst.version} is installed but this session still runs ${VERSION}. Tell the user: type /reload-plugins (or restart the session) to use ${inst.version}.`);
+  const newer = inst && semverCmp(inst.version, VERSION) > 0 ? inst.version : '';
   const cur = S.session(s.id);
-  if (cur?.mcp_version && cur.mcp_version !== VERSION)
-    out.push(`⚠ This session's UAC MCP server runs ${cur.mcp_version} but its hooks run ${VERSION}. Tell the user: /reload-plugins or restart the session (\`uac doctor\` shows both paths).`);
-  return out;
+  const mcp = cur?.mcp_version && cur.mcp_version !== VERSION ? cur.mcp_version : '';
+  const key = newer || mcp ? `installed=${inst?.version || '-'}|hooks=${VERSION}|mcp=${mcp || '-'}` : '';
+  if (!key || key === String(cur?.ver_warned)) return [];
+  run('UPDATE sessions SET ver_warned = ? WHERE id = ?', key, s.id);
+  return [`⚠ UAC versions differ: hooks run ${VERSION}${newer ? `, ${newer} is installed` : ''}${mcp ? `, MCP tools run ${mcp}` : ''}. Tell the user: type /reload-plugins (Claude Code) or Reload Window (VS Code).`];
 }
 
 // Another session of this project, not live, with ≥10 unsaved events nobody was asked to save yet (tiny ones keep their

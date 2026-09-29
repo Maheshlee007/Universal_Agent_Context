@@ -3,6 +3,8 @@
 const vscode = require('vscode');
 const cp = require('child_process');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 
 let ext, statusItem, viewerProc, viewerUrlP, panel;
 let current = null;              // last `uac status` result
@@ -43,16 +45,26 @@ const sessTitle = (s) => `#${s.n ?? '-'} ${s.short || s.id.slice(0, 8)} ${s.card
 const sessDesc = (s) => [s.branch, s.agent, ago(s.ended_at || s.started_at)].filter(Boolean).join(' · ');
 
 // ---------- status bar + polling ----------
+// The plugin version Claude Code has installed when it differs from this bundle (the file util.mjs reads; the extension
+// must not import plugin code at load).
+function claudeSkew() {
+  try {
+    const l = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json'), 'utf8')).plugins?.['universal-agent-context@uac'] || [];
+    const v = (l.find((x) => x.scope === 'user') || l[0])?.version;
+    return v && v !== ext.extension.packageJSON.version ? v : null;
+  } catch { return null; }
+}
 function render(st, err) {
   if (err) {
     statusItem.text = '$(warning) UAC';
     statusItem.tooltip = `UAC CLI not reachable: ${err.message}\nCheck uac.nodePath / uac.cliPath.`;
     return;
   }
-  const mode = st?.project?.mode, cap = st?.session?.capture;
-  statusItem.text = mode === 'off' ? 'UAC off' : cap === 'on' ? '● UAC rec' : '○ UAC';
+  const mode = st?.project?.mode, cap = st?.session?.capture, v = ext.extension.packageJSON.version, inst = claudeSkew();
+  statusItem.text = inst ? `$(warning) UAC ${v} ≠ Claude ${inst}` : mode === 'off' ? `UAC ${v} off` : cap === 'on' ? `● UAC ${v} rec` : `○ UAC ${v}`;
   const c = st?.counts || {};
-  statusItem.tooltip = `UAC · ${st?.project?.name || 'no project'} (${mode || 'mode not set'})\n` +
+  statusItem.tooltip = (inst ? `UAC ${v} (this extension) ≠ Claude Code plugin ${inst}. VS Code windows need Reload Window; open Claude Code sessions need /reload-plugins.\n` : '') +
+    `UAC ${v} · ${st?.project?.name || 'no project'} (${mode || 'mode not set'})\n` +
     `session: ${st?.session?.id || 'none'} · recording ${cap === 'on' ? 'on' : 'off'}\n` +
     `${c.active ?? 0} active · ${c.proposed ?? 0} proposed · ${c.stale ?? 0} stale · ${c.conflict ?? 0} conflicts\n` +
     (emptyCount ? `${emptyCount} empty session${emptyCount === 1 ? '' : 's'} (click → Delete empty)\n` : '') + 'Click for actions';
@@ -229,7 +241,9 @@ const toggleCapture = () => setCapture(current?.session?.capture === 'on' ? 'off
 
 async function menu() {
   const rec = current?.session?.capture === 'on';
+  const inst = claudeSkew();
   const actions = [
+    ...(inst ? [{ label: '$(refresh) Reload Window', description: `UAC ${ext.extension.packageJSON.version} ≠ Claude ${inst}`, run: () => vscode.commands.executeCommand('workbench.action.reloadWindow') }] : []),
     { label: rec ? '$(debug-stop) Stop recording' : '$(record) Start recording', run: toggleCapture },
     { label: '$(save) Save now', description: 'type #uac save in chat', run: () =>
       vscode.window.showInformationMessage('UAC: type "#uac save" in the agent chat. The agent runs the compressor; the extension cannot.') },
@@ -383,7 +397,7 @@ function activate(context) {
   ext = context;
   statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusItem.command = 'uac.menu';
-  statusItem.text = '○ UAC';
+  statusItem.text = `○ UAC ${context.extension.packageJSON.version}`;
   statusItem.show();
 
   for (const [key, load] of [['knowledge', loadKnowledge], ['review', loadReview], ['sessions', loadSessions]]) {

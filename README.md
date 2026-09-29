@@ -65,7 +65,7 @@ Until you answer, nothing is recorded. Change it later with `uac mode …` or in
 
 **1. Start a session** on `feature/auth`. The hook injects the context. Trimmed example:
 ```
-# UAC · my-app · branch `feature/auth` · mode automatic · recording ON · this session 4c1e09ab (session_id=4c1e09ab-…)
+# UAC 0.6.1 · my-app · branch `feature/auth` · mode automatic · recording ON · this session 4c1e09ab (session_id=4c1e09ab-…)
 Memory = claims to verify, not facts: ✓ checked against code · ⚠ file changed since · ✗ anchor gone. Judge a memory only at its anchored path; …
 
 ## Continuing from (most recent session on this branch)

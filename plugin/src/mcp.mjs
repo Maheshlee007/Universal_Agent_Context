@@ -5,7 +5,7 @@ import readline from 'node:readline';
 import * as S from './store.mjs';
 import * as K from './pack.mjs';
 import { rawLog } from './import.mjs';
-import { VERSION, ROOT } from './util.mjs';
+import { VERSION, ROOT, semverCmp, claudeInstalled } from './util.mjs';
 import { run, all } from './db.mjs';
 
 const str = { type: 'string' }, num = { type: 'number' }, arr = { type: 'array', items: { type: 'string' } };
@@ -181,9 +181,13 @@ export async function callTool(name, args = {}) {
 
 // The other direction of the version check: this server vs the hooks of the session it serves. Hooks before 0.5 stamp
 // no version at all, so an active session without a stamp was served by older hooks.
-let skewWarned = false;
+// A server older than the installed plugin says so on every result (cached 30 s: one small JSON read) until reloaded.
+let skewWarned = false, installed = { at: 0, v: '' };
 function skew(name) {
-  if (skewWarned || name === 'uac_digest' || name === 'uac_save') return ''; // the compressor may save an older, ended session
+  if (name === 'uac_digest' || name === 'uac_save') return ''; // the compressor may save an older, ended session
+  if (Date.now() - installed.at > 3e4) installed = { at: Date.now(), v: claudeInstalled()?.version || '' };
+  if (installed.v && semverCmp(installed.v, VERSION) > 0) return `⚠ UAC tools in this session run ${VERSION}, ${installed.v} is installed: tell the user to type /reload-plugins.\n\n`;
+  if (skewWarned) return '';
   try {
     const s = served();
     if (!s || (s.prompts || 0) + (s.last_active_at ? 1 : 0) === 0) return '';

@@ -145,8 +145,8 @@ test('freshness compares content: committing the verified content is not a chang
 test('start context re-delivered on first prompt if SessionStart never completed (host timeout)', () => {
   hook('SessionStart', { session_id: 'sess-slow', source: 'startup' });
   S.open().prepare("UPDATE sessions SET ctx_at = NULL WHERE id = 'sess-slow'").run(); // simulate a killed hook
-  assert.match(ctxOf(hook('UserPromptSubmit', { session_id: 'sess-slow', prompt: 'hi' })), /# UAC ·/);
-  assert.doesNotMatch(ctxOf(hook('UserPromptSubmit', { session_id: 'sess-slow', prompt: 'again' })), /# UAC ·/, 'only once');
+  assert.match(ctxOf(hook('UserPromptSubmit', { session_id: 'sess-slow', prompt: 'hi' })), /# UAC \S+ ·/);
+  assert.doesNotMatch(ctxOf(hook('UserPromptSubmit', { session_id: 'sess-slow', prompt: 'again' })), /# UAC \S+ ·/, 'only once');
   cli('rm', 'sess-slow', '--yes');
 });
 
@@ -433,7 +433,7 @@ test('compact start re-injects the loaded context + precompact snapshot', () => 
   hook('UserPromptSubmit', { session_id: 'sess-8', prompt: 'work on auth' });
   hook('PreCompact', { session_id: 'sess-8', trigger: 'auto' });
   const c = ctxOf(hook('SessionStart', { session_id: 'sess-8', source: 'compact' }));
-  assert.match(c, /compacted[\s\S]*# UAC ·[\s\S]*Pre-compaction snapshot/);
+  assert.match(c, /compacted[\s\S]*# UAC \S+ ·[\s\S]*Pre-compaction snapshot/);
 });
 
 test('handoff marks this session as the next session context', async () => {
@@ -664,4 +664,64 @@ test('proposal cap is per chapter, not per session lifetime (long sessions keep 
   K.save(S.session(sid), p, { base_event_id: d.base_event_id, upto_event_id: d.upto_event_id, summary: { title: 'c', body: 'b' }, checkpoint: { goal: 'g', note: 'n' } });
   assert.ok(S.propose({ type: 'fact', title: 'after the save', body: 'new chapter, new budget', confidence: 0.9 }, { s: S.session(sid), p }).id);
   void s0;
+});
+
+test('version visibility: header shows the version, warnings once per distinct mismatch, old MCP tools say so', async () => {
+  const { VERSION } = await import('../plugin/src/util.mjs');
+  const major = +VERSION.split('.')[0];
+  const fakeHome = path.join(tmp, 'fake-claude-home'), plugins = path.join(fakeHome, '.claude', 'plugins');
+  const install = (v) => { fs.mkdirSync(plugins, { recursive: true }); fs.writeFileSync(path.join(plugins, 'installed_plugins.json'), JSON.stringify({ plugins: { 'universal-agent-context@uac': [{ scope: 'user', version: v, installPath: `/fake/${v}` }] } })); };
+  const sid = 'sess-ver', p = S.projectFor(repo);
+  try {
+    // (a) the start context says which UAC produced it
+    assert.match(ctxOf(hook('SessionStart', { session_id: sid, source: 'startup' })), /# UAC \d+\.\d+\.\d+ ·/);
+    assert.deepEqual(K.versionNotes(S.session(sid), 'claude'), [], 'no fake install, no mismatch, nothing to say');
+
+    // (b) a newer installed plugin: one warning per distinct mismatch, again when the mismatch changes
+    process.env.UAC_TEST_HOME = fakeHome; // claudeInstalled() reads $UAC_TEST_HOME/.claude/plugins/installed_plugins.json
+    install(`${major + 1}.0.0`);
+    const first = K.versionNotes(S.session(sid), 'claude');
+    assert.equal(first.length, 1);
+    assert.match(first[0], new RegExp(`hooks run ${VERSION.replaceAll('.', '\.')}, ${major + 1}\.0\.0 is installed`));
+    assert.deepEqual(K.versionNotes(S.session(sid), 'claude'), [], 'same mismatch: silent');
+    install(`${major + 2}.0.0`);
+    assert.equal(K.versionNotes(S.session(sid), 'claude').length, 1, 'another installed version: warns again');
+    assert.deepEqual(K.versionNotes(S.session(sid), 'codex'), [], 'only Claude Code has this plugin cache');
+
+    // (e) status --json carries the versions object (with the fake install still in place)
+    const st = cli('status');
+    assert.match(st.versions.cli, /^\d+\.\d+\.\d+ \(/);
+    assert.match(st.versions.claude_installed, new RegExp(`^${major + 2}\.0\.0 `));
+    assert.match(st.versions.warning, /versions differ/);
+
+    // (d) an MCP server older than the installed plugin says so on every tool result, except digest/save.
+    // skew() lives in the stdio server (callTool has no prefix) and caches the install for 30 s, so use a fresh process.
+    S.addEvent(S.session(sid), 'prompt', { body: 'x' }); // something for uac_digest to return
+    const child = spawn(process.execPath, [BIN, 'mcp'], { cwd: repo, env: process.env });
+    let buf = '';
+    const by = {};
+    child.stdout.on('data', (d) => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { const r = JSON.parse(buf.slice(0, i)); by[r.id] = r; buf = buf.slice(i + 1); } });
+    const send = (m) => child.stdin.write(JSON.stringify(m) + '\n');
+    send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'uac_search', arguments: { query: 'tokens' } } });
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'uac_digest', arguments: { session_id: sid } } });
+    for (let i = 0; i < 50 && !(by[1] && by[2]); i++) await new Promise((r) => setTimeout(r, 100));
+    child.kill();
+    assert.ok(by[1].result.content[0].text.startsWith('⚠ UAC tools in this session run'), by[1].result.content[0].text.slice(0, 120));
+    assert.match(by[1].result.content[0].text, new RegExp(`run ${VERSION.replaceAll('.', '\.')}, ${major + 2}\.0\.0 is installed`));
+    assert.ok(!by[2].result.isError && !by[2].result.content[0].text.startsWith('⚠'), 'uac_digest is never prefixed');
+
+    // (c) the MCP tools of this session run another version than its hooks
+    fs.rmSync(path.join(plugins, 'installed_plugins.json'));
+    assert.deepEqual(K.versionNotes(S.session(sid), 'claude'), [], 'plugin gone: the earlier key no longer applies, nothing differs');
+    S.open().prepare("UPDATE sessions SET mcp_version = '0.0.1' WHERE id = ?").run(sid);
+    const m = K.versionNotes(S.session(sid), 'claude');
+    assert.equal(m.length, 1);
+    assert.match(m[0], /MCP tools run 0\.0\.1/);
+    assert.deepEqual(K.versionNotes(S.session(sid), 'claude'), []);
+  } finally {
+    delete process.env.UAC_TEST_HOME; // the fake install must not leak into any other test
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+    cli('rm', sid, '--yes');
+  }
+  void p;
 });

@@ -1,6 +1,6 @@
 ---
 name: uac-protocol
-description: The core UAC (Universal Agent Context) protocol. Covers reading the injected UAC start context (project knowledge, session cards, anchors, freshness marks), verifying memories, recording knowledge, cross-agent messages, and saving at the end. Use when a "# UAC ·" header or UAC note appears in context, when the user mentions UAC, memory, context, "#uac", or "what did we decide", and before ending or pausing a session.
+description: The core UAC (Universal Agent Context) protocol. Covers reading the injected UAC start context (project knowledge, session cards, anchors, freshness marks), verifying memories, recording knowledge, cross-agent messages, and saving at the end. Use when a "# UAC <version> ·" header or UAC note appears in context, when the user mentions UAC, memory, context, "#uac", or "what did we decide", and before ending or pausing a session.
 ---
 
 # UAC protocol
@@ -12,7 +12,7 @@ UAC keeps project knowledge and session cards across sessions, branches and LLM 
 
 ## 1. At session start: the context is already injected
 
-The hook injects a `# UAC · <project> · branch · mode · recording` header with project knowledge, this branch's latest session card (or the ones the user chose), "must not violate" rules, other active branches, and messages. **Don't call `uac_bootstrap`. Don't ask what to load or whether to record.**
+The hook injects a `# UAC <version> · <project> · branch · mode · recording` header with project knowledge, this branch's latest session card (or the ones the user chose), "must not violate" rules, other active branches, and messages. **Don't call `uac_bootstrap`. Don't ask what to load or whether to record.**
 
 Only act on what the header explicitly asks:
 - **"UAC first run… Ask the user ONCE"**: ask that one mode question (off / manual / automatic), then call `uac_capture` exactly as the header says. This is the only question UAC ever asks.

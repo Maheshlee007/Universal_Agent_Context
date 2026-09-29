@@ -44,6 +44,21 @@ async function ask(q) {
 }
 const onPath = (cmd) => spawnSync(process.platform === 'win32' ? 'where' : 'which', [cmd], { encoding: 'utf8', windowsHide: true }).status === 0;
 
+// which UAC is actually running where: this CLI, what Claude Code has installed, the VS Code extension (slow: doctor only),
+// and what the hooks/MCP server of the session `s` last stamped on it
+function versions(s, vscode) {
+  const c = claudeInstalled();
+  const u = { cli: `${VERSION} (${ROOT})`, claude_installed: c ? `${c.version} (${c.path})` : null };
+  if (vscode) {
+    const r = spawnSync('code', ['--list-extensions', '--show-versions'], { encoding: 'utf8', timeout: 15000, windowsHide: true, shell: process.platform === 'win32' });
+    u.vscode_extension = /^uac-dev\.universal-agent-context@(\S+)/im.exec(r.stdout || '')?.[1] || null;
+  }
+  if (s) { u.session = S.shortId(s.id); u.hook_version = s.hook_version || 'older than 0.5 (no stamp)'; u.mcp_version = s.mcp_version || null; }
+  const vs = new Set(['cli', 'claude_installed', 'vscode_extension', 'hook_version', 'mcp_version'].map((k) => u[k]?.split(' ')[0]).filter((v) => /^\d+\.\d+\.\d+$/.test(v || '')));
+  if (vs.size > 1) u.warning = 'versions differ: type /reload-plugins in open Claude Code sessions, Reload Window in VS Code';
+  return u;
+}
+
 export async function main(argv) {
   const { values: o, positionals: [cmd, ...args] } = parseArgs({
     args: argv, allowPositionals: true, strict: false,
@@ -75,13 +90,14 @@ export async function main(argv) {
 
     case 'status': {
       const p = proj();
-      if (!p.id) return out({ project: null, root: p.root }, `no UAC project at ${p.root} yet (it is registered when an agent session starts here)`);
+      if (!p.id) return out({ project: null, root: p.root, versions: versions(null) }, `no UAC project at ${p.root} yet (it is registered when an agent session starts here)\nversions: ${JSON.stringify(versions(null))}`);
       const s = get(`SELECT * FROM sessions WHERE project_id = ? AND status != 'ended' AND branch IS ? ORDER BY COALESCE(last_active_at, started_at) DESC LIMIT 1`, p.id, p.branch) || S.currentSession(p.id);
       const data = { project: { id: p.id, root: p.root, name: p.name, mode: p.mode, branch: p.branch }, session: s ? { id: s.id, capture: s.capture, status: s.status } : null,
         counts: S.counts(p.id), next_sessions: S.nextSessions(p.id), unsaved: S.unsavedSessions(p.id).map(({ session_id, events }) => ({ session_id, events })),
-        db: path.join(home(), 'uac.db') };
+        db: path.join(home(), 'uac.db'), versions: versions(s) };
       return out(data, `UAC · ${p.name} (${p.root}) · branch ${p.branch || '-'}\nmode: ${p.mode || 'not set (asked once in the next session)'}\n` +
         `session: ${s ? `${s.id} recording=${s.capture} ${s.status}` : 'none'}\n` +
+        `versions: ${JSON.stringify(data.versions)}\n` +
         `knowledge: ${data.counts.active} active · ${data.counts.proposed + data.counts.conflict} need a decision · ${data.counts.stale} stale\n` +
         `next session continues from: ${data.next_sessions.length ? data.next_sessions.join(', ') : 'latest session on the same branch'}\ndb: ${data.db}`);
     }
@@ -232,16 +248,7 @@ export async function main(argv) {
         db, db_bytes: size(db), wal_bytes: size(db + '-wal'), integrity: get('PRAGMA integrity_check').integrity_check, fts5: hasFts,
         project: p.root, branch: p.branch, mode: p.mode, counts: S.counts(p.id), projects: S.listProjects().length,
         duplicate_groups: p.id ? K.duplicates(p.id).length : 0, // near-duplicate knowledge the next save will be asked to merge
-        // which UAC is actually running where: this CLI, what Claude Code has installed, and what hooks/MCP last reported
-        versions: (() => {
-          const u = { cli: `${VERSION} (${ROOT})`, claude_installed: (() => { const c = claudeInstalled(); return c ? `${c.version} (${c.path})` : null; })() };
-          // what the most recently active session of this project was served by (each process stamps it)
-          const cs = p.id && S.currentSession(p.id);
-          if (cs) { u.session = S.shortId(cs.id); u.hooks = cs.hook_version || 'older than 0.5 (no stamp)'; u.mcp = cs.mcp_version || null; }
-          const vs = new Set(['cli', 'claude_installed', 'hooks', 'mcp'].map((k) => u[k]?.split(' ')[0]).filter((v) => /^\d+\.\d+\.\d+$/.test(v || '')));
-          if (vs.size > 1) u.warning = 'versions differ: type /reload-plugins in open Claude Code sessions (or restart them)';
-          return u;
-        })(),
+        versions: versions(p.id && S.currentSession(p.id), true),
         hook_errors: fs.existsSync(errLog) ? fs.readFileSync(errLog, 'utf8').trim().split('\n').filter((l) => !/^\s+at /.test(l)).slice(-5) : [] };
       return out(d, Object.entries(d).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join('\n'));
     }

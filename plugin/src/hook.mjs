@@ -4,7 +4,7 @@ import path from 'node:path';
 import { run, get, home, spool, now, checkpointWal, P } from './db.mjs';
 import * as S from './store.mjs';
 import * as K from './pack.mjs';
-import { clip, redact, target, enableGitCache, VERSION, git, claudeInstalled, semverCmp } from './util.mjs';
+import { clip, redact, target, enableGitCache, VERSION, git } from './util.mjs';
 import { adapters } from './adapters/index.mjs';
 import { importTranscript } from './import.mjs';
 
@@ -108,15 +108,7 @@ export function handle(ev) {
         if (l.msgs?.length) S.markRead(s, l.msgs.map((id) => ({ id }))); // shown in the start context, now actually delivered
       }
       // the MCP server of this session turned out to run another version (it stamps the session on its first tool call)
-      const v = S.session(s.id);
-      const inst = s.agent === 'claude' && !v.ver_warned ? claudeInstalled() : null;
-      if (inst && semverCmp(inst.version, VERSION) > 0) {
-        out.push(`[UAC] ⚠ UAC ${inst.version} is installed but this session still runs ${VERSION}. Tell the user: type /reload-plugins (or restart the session).`);
-        run('UPDATE sessions SET ver_warned = 1 WHERE id = ?', s.id);
-      } else if (v.mcp_version && v.mcp_version !== VERSION && !v.ver_warned) {
-        out.push(`[UAC] ⚠ This session's MCP server runs UAC ${v.mcp_version} but its hooks run ${VERSION}. Tell the user: /reload-plugins or restart the session.`);
-        run('UPDATE sessions SET ver_warned = 1 WHERE id = ?', s.id);
-      }
+      out.push(...K.versionNotes(s, s.agent).map((n) => `[UAC] ${n}`));
       const m = CONTROL.exec(prompt);
       if (m) {
         let r;
