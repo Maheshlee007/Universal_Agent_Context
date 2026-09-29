@@ -21,7 +21,7 @@ export const compressorPrompt = (sid) => `session_id=${sid}. Step 0: ToolSearch 
 // SubagentStop sends a compressor that stopped without "UAC saved:" back once, with the steps it most likely skipped
 export const COMPRESSOR_RETRY = `You have not saved yet. Step 0: ToolSearch "${TOOL_SELECT}" (if nothing is found: ToolSearch "uac_digest"); the tools exist even if you did not see them. Step 1: uac_digest with the session_id from your task. Step 2: one uac_save as its how_to_save says (git is not needed). Then reply with one line starting "UAC saved:".`;
 export const saveInstruction = (sid, host = 'claude') => host === 'claude'
-  ? `[UAC] Save requested. Spawn a subagent (Agent tool, foreground): subagent_type "${COMPRESSOR}" (or "uac-compressor" if that is how it is listed), model "haiku", prompt "${compressorPrompt(sid)}" (a subagent keeps the digest out of this conversation). Its reply must start with "UAC saved:"; if it doesn't, or the agent/model is unavailable, call uac_digest({session_id:"${sid}"}) yourself and follow how_to_save. Then continue.`
+  ? `[UAC] Save requested. Spawn a subagent with the Agent tool and run_in_background: false (a background save is lost when the session exits): subagent_type "${COMPRESSOR}" (or "uac-compressor" if that is how it is listed), model "haiku", prompt "${compressorPrompt(sid)}" (a subagent keeps the digest out of this conversation). Its reply must start with "UAC saved:"; if it doesn't, or the agent/model is unavailable, call uac_digest({session_id:"${sid}"}) yourself and follow how_to_save. Then continue.`
   : `[UAC] Save requested: call uac_digest({session_id:"${sid}"}) and follow its how_to_save (one uac_save call), in a subagent if you have one. Then continue.`;
 
 export const ago = (iso) => {
@@ -60,6 +60,10 @@ function fmtCard(c, meta, { commits } = {}) {
 // Human/LLM label for a session: its card/title, else what little we know, always with age.
 export const sessionLabel = (x, n = 50) =>
   `${clip(x.card?.title || x.title || `${x.agent} session, ${x.events} event${x.events === 1 ? '' : 's'}, no card`, n)} (${ago(x.last_active || x.started_at)})`;
+// a tool target that names a file (not a glob, command or query)
+const isFile = (t) => !!t && /[\\/]|\.\w{1,5}$/.test(t) && !/[\s*?]/.test(t);
+// failures not followed by a success of the same tool on the same target
+const stillFailing = (evs) => evs.filter((e, i) => e.kind === 'tool_fail' && !evs.slice(i + 1).some((x) => x.kind === 'tool' && x.tool === e.tool && x.target === e.target));
 // repo-relative path for cards (tool targets are often absolute)
 const rel = (root, f) => {
   const r = String(root || '').replace(/\\/g, '/').replace(/\/$/, '') + '/', x = String(f).replace(/\\/g, '/');
@@ -69,7 +73,7 @@ const GROUPS = [['decision', 'Decisions'], ['warning', 'Warnings'], ['lesson', '
   ['fact', 'Facts'], ['task', 'Open tasks'], ['preference', 'Preferences (apply only where stated)']];
 const cardMeta = (s, x) => `${x ? `${S.ref(x)} · ` : ''}${s.branch || 'no-branch'} · ${s.agent}${s.model ? ` (${s.model})` : ''} · ${ago(x?.last_active || s.started_at)}`;
 // (1–2 unsaved events after a save are its closing reply: not worth a mention)
-const state = (x, selfId) => `${x.id === selfId ? 'this session' : x.live ? 'live in another window' : x.status === 'ended' ? 'ended' : 'idle'}, ${x.card ? (x.card.quality === 'auto' ? 'auto card' : 'saved card') : 'no card'}${x.unsaved >= 3 || (x.unsaved && !x.card) ? `, ${x.unsaved} unsaved` : ''}${x.raw ? '' : ', no raw log'}`;
+const state = (x, selfId) => `${x.id === selfId ? 'this session' : x.live ? `active ${ago(x.last_active)}, not ended (another window, or closed without SessionEnd)` : x.status === 'ended' ? 'ended' : 'idle'}, ${x.card ? (x.card.quality === 'auto' ? 'auto card' : 'saved card') : 'no card'}${(x.card?.quality === 'auto' ? x.unsaved >= OTHER_SAVE_MIN : x.unsaved >= 3) || (x.unsaved && !x.card) ? `, ${x.unsaved} unsaved` : ''}${x.raw ? '' : ', no raw log'}`;
 const hasContent = (c) => c && (c.title || c.body || c.working || c.next_steps?.length);
 
 // ---------- bootstrap: project knowledge + chosen session cards + other branches + messages ----------
@@ -99,7 +103,8 @@ export function bootstrap(s, p, opts = {}) {
   //    unsaved work in another window), not only the last saved one
   let defaulted = false;
   if (!sessions.length && !freshStart) {
-    const latest = numbered.filter((x) => x.id !== s?.id && (x.branch === p.branch || !p.branch) && (hasContent(x.card) || x.unsaved >= 3))
+    const worked = (x) => x.card?.quality === 'llm' || !!get(`SELECT 1 AS y FROM events WHERE session_id = ? AND kind = 'tool' AND tool IN ('Edit','Write','MultiEdit','NotebookEdit','apply_patch','edit','write') LIMIT 1`, x.id);
+    const latest = numbered.filter((x) => x.id !== s?.id && (x.branch === p.branch || !p.branch) && (hasContent(x.card) || x.unsaved >= 3) && worked(x))
       .sort((a, b) => String(b.last_active).localeCompare(String(a.last_active)))[0];
     if (latest) { sessions = [latest.id]; defaulted = true; }
   }
@@ -140,18 +145,19 @@ export function bootstrap(s, p, opts = {}) {
   const must = items.filter((i) => ['requirement', 'constraint'].includes(i.kind)).sort((a, b) => b.score - a.score);
   const know = items.filter((i) => !['requirement', 'constraint'].includes(i.kind)).sort((a, b) => b.score - a.score);
 
-  // 3. other active branches (parallel work awareness). A branch whose tip is behind HEAD and contained in it was merged here.
-  // ponytail: a fresh branch cut from an older commit also looks "merged"; fast-forward merges look "active". Session status would refine this.
+  // 3. other active branches (parallel work awareness). Branches already merged here are left out (their knowledge is
+  // project knowledge now); a branch with no commits of its own also looks "merged" to git, so it stays listed.
   const head = git(p.root, 'rev-parse', 'HEAD');
   const merged = p.branch ? new Set(git(p.root, 'branch', '--merged', 'HEAD', '--format=%(refname:short) %(objectname)').split(/\r?\n/)
     .map((l) => l.split(' ')).filter(([b, sha]) => b && sha !== head).map(([b]) => b)) : new Set();
+  const workedOn = (b) => { const tip = git(p.root, 'rev-parse', '--short', '-q', '--verify', b); const st = all('SELECT start_commit AS c FROM sessions WHERE project_id = ? AND branch = ?', p.id, b).map((r) => r.c).filter(Boolean); return !tip || !st.some((c) => c.startsWith(tip) || tip.startsWith(c)); };
   const others = p.branch ? all(`SELECT s.branch, MAX(s.started_at) AS at FROM sessions s WHERE s.project_id = ? AND s.branch IS NOT NULL
       AND s.branch != ? AND s.started_at >= ? GROUP BY s.branch ORDER BY at DESC LIMIT 8`, p.id, p.branch, new Date(Date.now() - 14 * 864e5).toISOString())
-    .sort((a, b) => merged.has(a.branch) - merged.has(b.branch)).slice(0, 5)
+    .filter((b) => !(merged.has(b.branch) && workedOn(b.branch))).slice(0, 5)
     .map((b) => {
       const latest = numbered.find((x) => x.branch === b.branch);
       const c = latest?.card;
-      return `- \`${b.branch}\`${merged.has(b.branch) ? ` (merged into \`${p.branch}\`)` : ''}: ${latest ? `${S.ref(latest)} ` : ''}${c?.title ? `"${clip(c.title, 90)}"` : latest?.title ? `"${clip(latest.title, 90)}"` : '(no card yet)'} · ${latest?.agent || ''} · ${ago(b.at)}${c?.files?.length ? ` · files: ${c.files.slice(0, 5).join(', ')}` : ''}`;
+      return `- \`${b.branch}\`: ${latest ? `${S.ref(latest)} ` : ''}${c?.title ? `"${clip(c.title, 90)}"` : latest?.title ? `"${clip(latest.title, 90)}"` : '(no card yet)'} · ${latest?.agent || ''} · ${ago(b.at)}${c?.files?.length ? ` · files: ${c.files.slice(0, 5).join(', ')}` : ''}`;
     }) : [];
 
   // 4. messages for this session/branch: rendered before the knowledge, so no budget or clip can drop one that is marked read
@@ -169,7 +175,7 @@ export function bootstrap(s, p, opts = {}) {
   const loadedCards = [];
   for (const { s: cs, c, x } of cards) {
     const parents = (P(cs.loaded, {})?.sessions || []).map((id) => byId.get(id)).filter(Boolean);
-    const live = x && x.live ? ` · LIVE in another window${c.quality === 'auto' ? ' (its unsaved work, as an auto card)' : ''}` : '';
+    const live = x && x.live ? ` · active ${ago(x.last_active)}, not ended${c.quality === 'auto' ? ' (its unsaved work, as an auto card)' : ''}` : '';
     const meta = cardMeta(cs, x) + live + (parents.length ? ` · continues ${parents.map(S.ref).join(', ')}` : '');
     const t = fmtCard(S.card(cs.id), meta, { commits: log.filter((l) => l.at > Date.parse(c.at)).map((l) => l.text) });
     if (take(t, budget * 0.45) || !cardTexts.length) { cardTexts.push(t); loadedCards.push(x || { id: cs.id, seq: cs.seq }); }
@@ -296,8 +302,9 @@ export function startContext(s, p, { source } = {}) {
     run('UPDATE sessions SET save_asked = (SELECT MAX(id) FROM events WHERE session_id = ?) WHERE id = ?', pending.id, pending.id);
   }
   L.push(b.loaded);
-  if (p.mode === 'automatic') L.push('Saving is automatic: when it is time, the Stop hook tells you to spawn the compressor subagent. Do not call uac_digest/uac_save yourself unless that instruction says so.');
-  else if (p.mode === 'manual') L.push('Saving: only when the user types "#uac save" (then spawn the compressor subagent as instructed).');
+  const how = s.agent === 'claude' ? `spawn ${COMPRESSOR} (Agent tool, run_in_background: false, model haiku) with the prompt the instruction gives` : 'follow the save instruction';
+  if (p.mode === 'automatic') L.push(`Saving is automatic: when it is time, the Stop hook tells you to ${how}. If the user asks you to save, do the same. Do not call uac_digest/uac_save yourself unless that instruction says so.`);
+  else if (p.mode === 'manual') L.push(`Saving: only when the user types "#uac save" or asks you to; then ${how}.`);
   L.push(`User controls (typed at the start of a line; "uac: …" in Claude Code): #uac continue <n> | fresh | deep | save [n] | name <title> | off.`);
   // the notes and the loaded line must survive the 10K cap; the knowledge (last in the text) is what gets trimmed
   const tail = L.join('\n');
@@ -309,14 +316,17 @@ export function startContext(s, p, { source } = {}) {
 // ---------- digest / save (uac-compressor subagent) ----------
 // Working tree vs the commit the session started at (covers subagent edits that never appear as events). UAC's own export
 // (.context/) is not work. The tree is shared: edits from another open window on this checkout show up here too.
-function diffSince(p, commit) {
-  if (!commit) return { stat: '', files: [] };
+function diffSince(p, s) {
+  const base = s?.start_tree || s?.start_commit;
+  if (!base) return { stat: '', files: [] };
+  const root = s.root || p.root;
   const X = ['--', '.', ':(exclude).context'];
-  const stat = git(p.root, 'diff', '--stat', commit, ...X);
-  const files = git(p.root, 'diff', '--name-only', commit, ...X).split('\n').filter(Boolean);
-  const untracked = git(p.root, 'ls-files', '--others', '--exclude-standard', ...X).split('\n').filter(Boolean).slice(0, 30);
+  const stat = git(root, 'diff', '--stat', base, ...X);
+  const files = git(root, 'diff', '--name-only', base, ...X).split('\n').filter(Boolean);
+  const before = new Set(P(s.start_untracked, []));
+  const untracked = git(root, 'ls-files', '--others', '--exclude-standard', ...X).split('\n').filter((f) => f && !before.has(f)).slice(0, 30);
   const text = [stat, untracked.length ? `untracked: ${untracked.join(', ')}` : ''].filter(Boolean).join('\n');
-  return { stat: text ? clip(`(working tree vs session start; may include edits from other windows on this checkout)\n${text}`, 3000) : '', files: [...files, ...untracked] };
+  return { stat: text ? clip(`(working tree vs this session's start; edits from another window open at the same time show up too)\n${text}`, 3000) : '', files: [...files, ...untracked] };
 }
 
 export function digest(s, maxChars = 60000) {
@@ -340,7 +350,7 @@ export function digest(s, maxChars = 60000) {
   // ponytail: keeps head + tail when over budget; map-reduce chunking if sessions routinely exceed it
   if (text.length > maxChars) text = text.slice(0, maxChars * 0.3) + '\n  …[middle omitted]…\n' + text.slice(-maxChars * 0.7);
   const goal = evs.find((e) => e.kind === 'prompt')?.body || '';
-  const d = diffSince(p, s.start_commit);
+  const d = diffSince(p, s);
   const touched = new Set([...d.files, ...evs.map((e) => e.target).filter(Boolean)].map((f) => String(f).replace(/\\/g, '/')));
   const recheck = all(`SELECT * FROM memories WHERE project_id = ? AND status IN ('active','stale')`, s.project_id).map(S.hydrate)
     .filter((m) => [...m.files, ...m.anchors.map((a) => a.file)].some((f) => [...touched].some((t) => t.endsWith(f) || f.endsWith(t))))
@@ -493,10 +503,10 @@ export function autoCard(s) {
   const evs = all(`SELECT * FROM events WHERE session_id = ? AND id > ? AND kind != 'pending' ORDER BY id`, s.id, s.saved_event_id);
   if (!evs.length) return null;
   const prompts = evs.filter((e) => e.kind === 'prompt');
-  const files = [...new Set(evs.filter((e) => e.kind === 'tool' && e.target && /[\\/]|\.\w{1,5}$/.test(e.target) && !/\s/.test(e.target)).map((e) => rel(p?.root, e.target)))];
-  const d = p && s.start_commit ? diffSince(p, s.start_commit) : { stat: '', files: [] };
+  const files = [...new Set(evs.filter((e) => e.kind === 'tool' && isFile(e.target)).map((e) => rel(p?.root, e.target)))];
+  const d = p ? diffSince(p, s) : { stat: '', files: [] };
   const allFiles = [...new Set([...d.files, ...files])].slice(0, 20);
-  const fails = evs.filter((e) => e.kind === 'tool_fail').slice(-3);
+  const fails = stillFailing(evs).slice(-3);
   const last = evs.filter((e) => e.kind === 'assistant').at(-1)?.body;
   const goal = prompts[0]?.body || s.title || '';
   // the session's name wins (auto-named from the first real prompt, or renamed by the user)
@@ -520,8 +530,8 @@ export function snapshot(s, trigger = 'precompact') {
   const q = (sql) => all(sql, s.id, s.saved_event_id);
   const prompts = q(`SELECT body FROM events WHERE session_id = ? AND id > ? AND kind = 'prompt' ORDER BY id`);
   const files = [...new Set(q(`SELECT target FROM events WHERE session_id = ? AND id > ? AND kind = 'tool' AND target IS NOT NULL ORDER BY id DESC LIMIT 80`)
-    .map((r) => r.target).filter((t) => /[\\/]|\.\w{1,5}$/.test(t) && !/\s/.test(t)).map((t) => rel(S.project(s.project_id)?.root, t)))].slice(0, 15);
-  const fails = q(`SELECT tool, target FROM events WHERE session_id = ? AND id > ? AND kind = 'tool_fail' ORDER BY id DESC LIMIT 3`);
+    .map((r) => r.target).filter(isFile).map((t) => rel(S.project(s.project_id)?.root, t)))].slice(0, 15);
+  const fails = stillFailing(q(`SELECT id, kind, tool, target FROM events WHERE session_id = ? AND id > ? AND kind IN ('tool','tool_fail') ORDER BY id`)).slice(-3);
   const last = q(`SELECT body FROM events WHERE session_id = ? AND id > ? AND kind = 'assistant' ORDER BY id DESC LIMIT 1`)[0]?.body;
   const c = { goal: clip((trigger === 'tail' ? prompts.at(-1) : prompts[0])?.body, 300), files, note: clip(last || prompts.at(-1)?.body, 400),
     broken: fails.map((f) => `${f.tool} ${f.target || ''}`).join('; '), working: '', next_steps: [] };

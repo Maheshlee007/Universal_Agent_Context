@@ -56,7 +56,7 @@ export function redact(text) {
     if (!/^p(ass)?w/i.test(key) && val.length < 8) return m;                // token/secret values are long; passwords may not be
     return `${key}${sep}${q}[REDACTED]`;
   });
-  for (const re of PII) s = s.replace(re, '[PII]');
+  for (const re of PII) s = s.replace(re, (m) => (/^(0\.0\.0\.0|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|255\.|169\.254\.)/.test(m) ? m : '[PII]'));
   return s;
 }
 

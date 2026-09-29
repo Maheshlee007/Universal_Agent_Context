@@ -175,7 +175,7 @@ test('branches: other active branch shown; messages delivered once cross-session
   g('checkout', '-q', 'feature/ui'); g('commit', '-q', '--allow-empty', '-m', 'ui work'); g('checkout', '-q', 'main');
   g('commit', '-q', '--allow-empty', '-m', 'main moved'); g('merge', '-q', '--no-ff', 'feature/ui', '-m', 'merge ui');
   const afterMerge = K.bootstrap(S.session('sess-5'), S.projectFor(repo), { record: false }).text;
-  assert.match(afterMerge, /`feature\/ui` \(merged into `main`\)/);
+  assert.doesNotMatch(afterMerge, /Other active branches[\s\S]*`feature\/ui`/, 'a branch merged here is no longer parallel work');
 });
 
 test('#uac continue <n> loads chosen sessions; multi-session bootstrap merges; fresh = knowledge only', async () => {

@@ -76,7 +76,7 @@ export async function main(argv) {
     case 'status': {
       const p = proj();
       if (!p.id) return out({ project: null, root: p.root }, `no UAC project at ${p.root} yet (it is registered when an agent session starts here)`);
-      const s = S.currentSession(p.id);
+      const s = get(`SELECT * FROM sessions WHERE project_id = ? AND status != 'ended' AND branch IS ? ORDER BY COALESCE(last_active_at, started_at) DESC LIMIT 1`, p.id, p.branch) || S.currentSession(p.id);
       const data = { project: { id: p.id, root: p.root, name: p.name, mode: p.mode, branch: p.branch }, session: s ? { id: s.id, capture: s.capture, status: s.status } : null,
         counts: S.counts(p.id), next_sessions: S.nextSessions(p.id), unsaved: S.unsavedSessions(p.id).map(({ session_id, events }) => ({ session_id, events })),
         db: path.join(home(), 'uac.db') };

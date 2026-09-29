@@ -86,7 +86,7 @@ const V3_COLUMNS = [
   ['checkpoints', 'gaps TEXT'],
   // v0.5: seq = stable per-project session number (#n never moves); hook/mcp_version = which UAC served this session;
   // save_retry = the save request (event id) we already asked to retry once
-  ['sessions', 'seq INTEGER'], ['sessions', 'hook_version TEXT'], ['sessions', 'mcp_version TEXT'], ['sessions', 'save_retry INTEGER DEFAULT 0'], ['sessions', 'ver_warned INTEGER DEFAULT 0'], ['sessions', 'end_commit TEXT'], ['sessions', 'root TEXT'],
+  ['sessions', 'seq INTEGER'], ['sessions', 'hook_version TEXT'], ['sessions', 'mcp_version TEXT'], ['sessions', 'save_retry INTEGER DEFAULT 0'], ['sessions', 'ver_warned INTEGER DEFAULT 0'], ['sessions', 'end_commit TEXT'], ['sessions', 'root TEXT'], ['sessions', 'start_tree TEXT'], ['sessions', 'start_untracked TEXT'],
 ];
 function migrate() {
   for (const [t, col] of V3_COLUMNS) { try { db.exec(`ALTER TABLE ${t} ADD COLUMN ${col}`); } catch { /* exists */ } }

@@ -67,7 +67,7 @@ You call the uac MCP tools. You may also Read/Grep/Glob files and run `git` to c
 | preference | How the user likes to work (style, tools, tone) | The preference, stated once, plus where it applies and where it does NOT (e.g. "inline styles for dynamic colors in React components; not for static layout, which stays Tailwind") |
 | warning | A trap, fragile code, or "don't touch X without Y" | The risk and the trigger |
 | idea | A brainstormed or deferred possibility | Always type `idea`. It never becomes a fact or a decision. |
-| task | Open work that needs doing | Title plus the done condition |
+| task | Open work the user asked for (or that is clearly still needed) that this session did NOT finish. Routine next steps go in `checkpoint.next_steps`, not tasks | Title plus the done condition |
 
 **Be exact, not paraphrased:**
 - **Quote identifiers verbatim** in titles and bodies: exact function, const, class, env var, route, template-id and file names, in backticks (`computeRowPlan`, `MAX_LOGIN_ATTEMPTS`, `tpl-invoice-v2`). They must be greppable. Never rename or "prettify" them.

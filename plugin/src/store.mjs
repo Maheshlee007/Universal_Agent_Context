@@ -61,7 +61,7 @@ export function setMode(projectId, mode) {
 const PROJECT_TABLES = ['sessions', 'memories', 'checkpoints', 'summaries', 'packs', 'retrievals', 'messages'];
 export function listProjects() {
   return all(`SELECT p.id, p.root, p.name, p.mode, p.git_remote,
-      (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id) AS sessions,
+      (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id AND NOT ${PHANTOM}) AS sessions,
       (SELECT COUNT(*) FROM memories m WHERE m.project_id = p.id) AS memories
     FROM projects p ORDER BY p.name`);
 }
@@ -96,10 +96,14 @@ export function ensureSession({ host, session_id, cwd, transcript_path, model })
   }
   const p = projectFor(cwd);
   // root = the checkout this session runs in (a worktree may differ from the project's registered root)
-  run(`INSERT INTO sessions(id, project_id, agent, model, branch, start_commit, capture, transcript_path, started_at, root)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+  const root = gitInfo(cwd || process.cwd()).root;
+  // what the working tree already held at start (a tree snapshot + untracked files): later diffs credit only this session's edits
+  const tree = p.commit ? git(root, 'stash', 'create') || p.commit : null;
+  const untracked = p.commit ? git(root, 'ls-files', '--others', '--exclude-standard').split(/\r?\n/).filter(Boolean).slice(0, 300) : [];
+  run(`INSERT INTO sessions(id, project_id, agent, model, branch, start_commit, capture, transcript_path, started_at, root, start_tree, start_untracked)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
     session_id, p.id, host, model ?? null, p.branch, p.commit,
-    p.mode === 'automatic' ? 'on' : p.mode ? 'off' : 'ask', transcript_path ?? null, now(), gitInfo(cwd || process.cwd()).root);
+    p.mode === 'automatic' ? 'on' : p.mode ? 'off' : 'ask', transcript_path ?? null, now(), root, tree, J(untracked));
   return { s: session(session_id), created: true };
 }
 
