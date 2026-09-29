@@ -100,10 +100,10 @@ export function ensureSession({ host, session_id, cwd, transcript_path, model })
   // what the working tree already held at start (a tree snapshot + untracked files): later diffs credit only this session's edits
   const tree = p.commit ? git(root, 'stash', 'create') || p.commit : null;
   const untracked = p.commit ? git(root, 'ls-files', '--others', '--exclude-standard').split(/\r?\n/).filter(Boolean).slice(0, 300) : [];
-  run(`INSERT INTO sessions(id, project_id, agent, model, branch, start_commit, capture, transcript_path, started_at, root, start_tree, start_untracked)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+  run(`INSERT INTO sessions(id, project_id, agent, model, branch, start_commit, capture, transcript_path, started_at, root, start_tree, start_untracked, area)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     session_id, p.id, host, model ?? null, p.branch, p.commit,
-    p.mode === 'automatic' ? 'on' : p.mode ? 'off' : 'ask', transcript_path ?? null, now(), root, tree, J(untracked));
+    p.mode === 'automatic' ? 'on' : p.mode ? 'off' : 'ask', transcript_path ?? null, now(), root, tree, J(untracked), areaOf(p.root, cwd));
   return { s: session(session_id), created: true };
 }
 
@@ -160,8 +160,10 @@ const SNAPS = `('precompact', 'pause', 'tail')`;
 export function card(sessionId) {
   const sm = get('SELECT * FROM summaries WHERE session_id = ? ORDER BY created_at DESC LIMIT 1', sessionId);
   const snap = get(`SELECT * FROM checkpoints WHERE session_id = ? AND trigger IN ${SNAPS} AND (COALESCE(goal, '') != '' OR files != '[]') ORDER BY ts DESC LIMIT 1`, sessionId);
-  const main = get(`SELECT * FROM checkpoints WHERE session_id = ? AND superseded_by IS NULL AND trigger NOT IN ${SNAPS} ORDER BY ts DESC LIMIT 1`, sessionId)
+  const main = (sm?.checkpoint_id && get('SELECT * FROM checkpoints WHERE id = ?', sm.checkpoint_id))
+    || get(`SELECT * FROM checkpoints WHERE session_id = ? AND superseded_by IS NULL AND trigger NOT IN ${SNAPS} ORDER BY ts DESC LIMIT 1`, sessionId)
     || get(`SELECT * FROM checkpoints WHERE session_id = ? AND trigger NOT IN ${SNAPS} ORDER BY ts DESC LIMIT 1`, sessionId);
+  const chapterCount = get(`SELECT COUNT(*) AS n FROM summaries WHERE session_id = ? AND quality = 'llm'`, sessionId).n;
   const cp = main || snap;
   if (!sm && !cp) return null;
   const cardAt = sm?.created_at ?? main?.ts;
@@ -171,7 +173,20 @@ export function card(sessionId) {
     quality: sm?.quality ?? 'llm', model: sm?.model ?? null, goal: cp?.goal ?? null, working: cp?.working ?? null, broken: cp?.broken ?? null,
     next_steps: P(cp?.next_steps, []), files: P(cp?.files, []), note: cp?.note ?? null, at: sm?.created_at ?? cp?.ts,
     events_n: sm?.events_n ?? null, gaps: cp?.gaps ?? null, tail,
+    chapters: chapterCount, chapter_no: sm?.quality === 'llm' ? chapterCount : null,
   };
+}
+
+// A session's chapters, oldest first: one per LLM save, each about ITS events only. Cards saved before 0.6.0 were
+// whole-session rewrites (`pre`): they overlap the later ones.
+export function chapters(sessionId) {
+  return all(`SELECT x.id, x.title, x.from_ts, x.created_at AS at, x.events_n, COALESCE(x.checkpoint_id,
+      (SELECT c.id FROM checkpoints c WHERE c.session_id = x.session_id AND c.trigger = 'save' AND c.ts >= x.created_at ORDER BY c.ts LIMIT 1)) AS cp
+    FROM summaries x WHERE x.session_id = ? AND x.quality = 'llm' ORDER BY x.created_at`, sessionId)
+    .map((r, i) => {
+      const c = r.cp ? get('SELECT goal, files FROM checkpoints WHERE id = ?', r.cp) : null;
+      return { id: r.id, no: i + 1, title: r.title, from_ts: r.from_ts, at: r.at, events_n: r.events_n, checkpoint_id: r.cp, goal: c?.goal ?? null, files: P(c?.files, []), pre: !r.from_ts };
+    });
 }
 
 // Phantom = a session nobody typed in: hosts start one on every window reload / panel open, and `/resume` switches
@@ -504,6 +519,56 @@ function projectFiles(root) {
 // - writing (propose/update): the author typed a wrong path → "did you mean" the file under the project root;
 // - an existing memory whose file is gone: same-named files elsewhere are DIFFERENT files (other copies/scaffolds) and
 //   must not be used to verify or reopen it.
+// ---------- packages (monorepos) ----------
+// A repo with several apps/packages (npm/pnpm/yarn workspaces, lerna; turbo and nx sit on those; or, with no manifest at
+// the root, 2+ folders that each have their own, e.g. Backend/ + Frontend/) stays ONE project, but every session and memory
+// gets the package it belongs to: a session in apps/web is not handed apps/api's knowledge as if it applied there.
+// ponytail: JS workspace configs + a manifest scan 2 levels deep; parse go.work / Cargo [workspace] if those repos need it
+const MANIFEST = /^(package\.json|pyproject\.toml|go\.mod|Cargo\.toml|pom\.xml|build\.gradle(\.kts)?|composer\.json|Gemfile|.+\.csproj)$/;
+const pkgCache = new Map();
+export function packagesOf(root) {
+  if (!root) return [];
+  if (pkgCache.has(root)) return pkgCache.get(root);
+  const read = (f) => { try { return fs.readFileSync(path.join(root, f), 'utf8'); } catch { return null; } };
+  const json = (f) => { try { return JSON.parse(read(f) ?? 'null'); } catch { return null; } };
+  const dirs = (d) => { try { return fs.readdirSync(path.join(root, d), { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules').map((e) => (d ? `${d}/${e.name}` : e.name)); } catch { return []; } };
+  const hasManifest = (d) => { try { return fs.readdirSync(path.join(root, d)).some((f) => MANIFEST.test(f)); } catch { return false; } };
+  const pj = json('package.json');
+  const globs = [...(Array.isArray(pj?.workspaces) ? pj.workspaces : pj?.workspaces?.packages || []), ...(json('lerna.json')?.packages || [])];
+  const pnpm = read('pnpm-workspace.yaml');
+  if (pnpm) globs.push(...[...pnpm.matchAll(/^\s*-\s*['"]?([^'"#\s]+)['"]?/gm)].map((m) => m[1]));
+  let pkgs = [];
+  for (const g of globs.filter((x) => !x.startsWith('!'))) {
+    const clean = g.replace(/^\.\//, '').replace(/\/+$/, '');
+    if (!clean.includes('*')) { pkgs.push(clean); continue; }
+    const lvl1 = dirs(clean.slice(0, clean.indexOf('*')).replace(/\/$/, ''));
+    pkgs.push(...lvl1, ...(clean.includes('**') ? lvl1.flatMap(dirs) : []));
+  }
+  pkgs = pkgs.filter(hasManifest);
+  if (!pkgs.length && !hasManifest('')) { // no workspace config and no root manifest: folders that are projects of their own
+    const cand = dirs('').flatMap((d) => (hasManifest(d) ? [d] : dirs(d).filter(hasManifest)));
+    if (cand.length >= 2) pkgs = cand;
+  }
+  pkgs = [...new Set(pkgs)].sort((a, b) => b.length - a.length); // longest first: a nested package wins
+  pkgCache.set(root, pkgs);
+  return pkgs;
+}
+// the package a path (absolute or repo-relative) is in, or null (repo root / not a monorepo)
+export function areaOf(root, file) {
+  if (!root || !file) return null;
+  const r = String(root).replace(/\\/g, '/').replace(/\/$/, '');
+  let f = String(file).replace(/\\/g, '/');
+  if (f.toLowerCase() === r.toLowerCase()) return null;
+  if (f.toLowerCase().startsWith(`${r.toLowerCase()}/`)) f = f.slice(r.length + 1);
+  f = f.replace(/^\.\//, '');
+  return packagesOf(root).find((p) => f === p || f.startsWith(`${p}/`)) || null;
+}
+// one package for a memory or card: all its files in the same package; spread over several (or none) = repo-wide (null)
+export function areaOfFiles(root, files) {
+  const as = [...new Set((files || []).filter(Boolean).map((f) => areaOf(root, f)))];
+  return as.length === 1 ? as[0] : null;
+}
+
 // Before an LLM-written anchor is stored: a symbol that is not in its (existing) file was misquoted or invented, and would
 // show as "✗ symbol gone" to every later reader. Keep the file anchor, drop the symbol, and say so.
 export function fixAnchors(root, anchors) {
@@ -762,7 +827,9 @@ export function exportProjectMd(p) {
   // the last session cards travel with the repo too (a clone elsewhere, or a lost ~/.uac, still has them)
   assignSeq(p.id); // a session saved before its number was given would print as #?
   const recent = all(`SELECT s.id, s.seq, s.branch, x.title, x.body, x.created_at FROM summaries x JOIN sessions s ON s.id = x.session_id
-      WHERE x.project_id = ? AND x.quality = 'llm' AND s.rolled_into IS NULL ORDER BY x.created_at DESC LIMIT 3`, p.id);
+      WHERE x.project_id = ? AND x.quality = 'llm' AND s.rolled_into IS NULL
+        AND x.created_at = (SELECT MAX(y.created_at) FROM summaries y WHERE y.session_id = x.session_id AND y.quality = 'llm')
+      ORDER BY x.created_at DESC LIMIT 3`, p.id); // the latest chapter of each of the last 3 sessions
   if (recent.length) {
     out += `\n## Recent sessions\n`;
     for (const r of recent) {

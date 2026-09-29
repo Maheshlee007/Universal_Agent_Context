@@ -42,19 +42,31 @@ function fresh(m, root) {
   return f.state === 'verified' ? '✓' : '(no anchor)';
 }
 
-function fmtCard(c, meta, { commits } = {}) {
-  const L = [`### ${meta}`];
+const at = (iso) => String(iso || '').slice(5, 16).replace('T', ' ');
+const span = (e) => (e.pre ? at(e.at) : `${at(e.from_ts)}–${String(e.from_ts).slice(0, 10) === String(e.at).slice(0, 10) ? at(e.at).slice(6) : at(e.at)}`);
+
+// A session card = its latest chapter in full + one line per earlier chapter (titles only; uac_get opens one).
+function fmtCard(c, meta, { commits, sessionId } = {}) {
+  const chs = sessionId && c.chapters ? S.chapters(sessionId) : [];
+  const earlier = c.chapter_no ? chs.slice(0, -1) : chs; // an auto card (unsaved work) comes after every saved chapter
+  const L = [`### ${meta}${c.chapter_no && c.chapters > 1 ? ` · chapter ${c.chapter_no}/${c.chapters}` : !c.chapter_no && chs.length ? ` · after ${chs.length} saved chapter${chs.length === 1 ? '' : 's'}` : ''}`];
+  if (earlier[0]?.goal && earlier[0].goal !== c.goal) L.push(`Session goal (chapter 1): ${clip(earlier[0].goal, 200)}`);
   if (c.title) L.push(`**${c.title}**${c.quality === 'auto' ? ' _(auto card from recorded events, no LLM summary yet)_' : c.events_n ? ` _(from ${c.events_n} events)_` : ''}`);
   // work recorded AFTER this card was written is the current state: shown first, and the card's Next may already be done
   if (c.tail) L.push(`Current state (after this card, unsaved, ${ago(c.tail.at)}): ${[c.tail.goal && `last request "${clip(c.tail.goal, 160)}"`, c.tail.note && `last result "${clip(c.tail.note, 200)}"`, c.tail.files?.length && `files ${c.tail.files.slice(0, 6).join(', ')}`].filter(Boolean).join('; ')}`);
-  if (c.body) L.push(clip(c.body.replace(/\n{2,}/g, '\n'), 700));
+  if (c.body) L.push(clip(c.body.replace(/\n{2,}/g, '\n'), 1200));
   if (c.working) L.push(`Working: ${clip(c.working, 300)}`);
   if (c.broken) L.push(`Broken/open: ${clip(c.broken, 300)}`);
-  if (c.next_steps?.length) L.push(`Next${c.tail ? ' (from the card; may be done already, see Current state)' : ''}: ${c.next_steps.slice(0, 6).join('; ')}`);
+  if (c.next_steps?.length) L.push(`Next${c.tail ? ' (from the card; may be done already, see Current state)' : ''}: ${c.next_steps.slice(0, 8).join('; ')}${c.next_steps.length > 8 ? ` (+${c.next_steps.length - 8} more open)` : ''}`);
   if (c.files?.length) L.push(`Files: ${c.files.slice(0, 12).join(', ')}`);
   if (c.note) L.push(`Note for next dev: ${clip(c.note, 300)}`);
   if (c.gaps) L.push(`Not in this card (verify in code before relying on it): ${clip(c.gaps, 300)}`);
   if (commits?.length) L.push(`Commits since this card: ${commits.slice(0, 5).join(' · ')}`);
+  if (earlier.length) {
+    L.push(`Earlier chapters (titles only: if your task touches their files, uac_get {ids:["s-…"]} first):`);
+    for (const e of earlier.slice(-5)) L.push(`- ${e.id} · ${span(e)} · "${clip(e.title, 90)}"${e.files.length ? ` · files: ${e.files.slice(0, 4).join(', ')}` : ''}${e.pre ? ' · pre-chapter card, overlaps later ones' : ''}`);
+    if (earlier.length > 5) L.push(`- +${earlier.length - 5} earlier: uac_get {ids:["${S.shortId(sessionId)}"]} lists all chapters`);
+  }
   return L.join('\n');
 }
 // Human/LLM label for a session: its card/title, else what little we know, always with age.
@@ -71,7 +83,7 @@ const rel = (root, f) => {
 };
 const GROUPS = [['decision', 'Decisions'], ['warning', 'Warnings'], ['lesson', 'Lessons'], ['architecture', 'Architecture'],
   ['fact', 'Facts'], ['task', 'Open tasks'], ['preference', 'Preferences (apply only where stated)']];
-const cardMeta = (s, x) => `${x ? `${S.ref(x)} · ` : ''}${s.branch || 'no-branch'} · ${s.agent}${s.model ? ` (${s.model})` : ''} · ${ago(x?.last_active || s.started_at)}`;
+const cardMeta = (s, x) => `${x ? `${S.ref(x)} · ` : ''}${s.branch || 'no-branch'}${s.area ? ` · in ${s.area}` : ''} · ${s.agent}${s.model ? ` (${s.model})` : ''} · ${ago(x?.last_active || s.started_at)}`;
 // (1–2 unsaved events after a save are its closing reply: not worth a mention)
 const state = (x, selfId) => `${x.id === selfId ? 'this session' : x.live ? `active ${ago(x.last_active)}, not ended (another window, or closed without SessionEnd)` : x.status === 'ended' ? 'ended' : 'idle'}, ${x.card ? (x.card.quality === 'auto' ? 'auto card' : 'saved card') : 'no card'}${(x.card?.quality === 'auto' ? x.unsaved >= OTHER_SAVE_MIN : x.unsaved >= 3) || (x.unsaved && !x.card) ? `, ${x.unsaved} unsaved` : ''}${x.raw ? '' : ', no raw log'}`;
 const hasContent = (c) => c && (c.title || c.body || c.working || c.next_steps?.length);
@@ -102,9 +114,12 @@ export function bootstrap(s, p, opts = {}) {
   // 1. session cards: chosen ones, else the most recently ACTIVE session on this branch that has content (a card, or
   //    unsaved work in another window), not only the last saved one
   let defaulted = false;
+  // monorepo: a session started inside a package continues that package's work (or repo-wide work), not another package's
+  const here = s ? S.session(s.id)?.area ?? null : null;
+  const areaOfSession = (x) => x.area ?? S.areaOfFiles(p.root, x.card?.files);
   if (!sessions.length && !freshStart) {
     const worked = (x) => x.card?.quality === 'llm' || !!get(`SELECT 1 AS y FROM events WHERE session_id = ? AND kind = 'tool' AND tool IN ('Edit','Write','MultiEdit','NotebookEdit','apply_patch','edit','write') LIMIT 1`, x.id);
-    const latest = numbered.filter((x) => x.id !== s?.id && (x.branch === p.branch || !p.branch) && (hasContent(x.card) || x.unsaved >= 3) && worked(x))
+    const latest = numbered.filter((x) => x.id !== s?.id && (x.branch === p.branch || !p.branch) && (hasContent(x.card) || x.unsaved >= 3) && worked(x) && (!here || !areaOfSession(x) || areaOfSession(x) === here))
       .sort((a, b) => String(b.last_active).localeCompare(String(a.last_active)))[0];
     if (latest) { sessions = [latest.id]; defaulted = true; }
   }
@@ -126,7 +141,10 @@ export function bootstrap(s, p, opts = {}) {
       AND id NOT IN (SELECT r.b FROM memory_relations r JOIN memories x ON x.id = r.a WHERE r.rel = 'supersedes' AND x.scope = 'branch'
         AND x.branch = ? AND x.status IN ('active','stale'))`, p.id, freshStart ? '__none__' : p.branch ?? '', p.branch ?? '').map(S.hydrate));
   // (on a branch, a project memory that this branch has a newer version of is shown only as that version)
+  let otherPkg = 0;
   const items = mems.map((m) => {
+    const area = S.areaOfFiles(p.root, [...m.files, ...m.anchors.map((a) => a.file)]);
+    if (here && area && area !== here) { otherPkg++; return null; }
     let score = 0;
     if (hits.has(m.id)) score += hits.get(m.id);
     const files = [...m.files, ...m.anchors.map((a) => a.file)];
@@ -137,11 +155,11 @@ export function bootstrap(s, p, opts = {}) {
     if (m.status === 'stale' || m.freshness.state === 'missing') score -= 0.8;
     const anc = S.fmtAnchors(m);
     const f = fresh(m, p.root);
-    const tag = m.scope === 'branch' ? `[branch ${m.branch}] ` : m.scope === 'user' || m.project_id == null ? '[all projects] ' : '';
+    const tag = (m.scope === 'branch' ? `[branch ${m.branch}] ` : m.scope === 'user' || m.project_id == null ? '[all projects] ' : '') + (area && area !== here ? `[in ${area}] ` : '');
     const age = m.type === 'task' ? ` (open ${Math.max(0, Math.round((Date.now() - Date.parse(m.created_at)) / 864e5))}d)` : '';
     const text = `- ${tag}**${m.title}**${age}: ${m.body.replace(/\n+/g, ' ')}${m.why ? ` (why: ${m.why})` : ''}${anc ? ` · \`${anc}\`` : ''}${f ? ` ${f}` : ''}${m.source_model ? ` _(by ${m.source_model})_` : ''} \`${m.id}\``;
     return { id: m.id, kind: m.type, score, text };
-  });
+  }).filter(Boolean);
   const must = items.filter((i) => ['requirement', 'constraint'].includes(i.kind)).sort((a, b) => b.score - a.score);
   const know = items.filter((i) => !['requirement', 'constraint'].includes(i.kind)).sort((a, b) => b.score - a.score);
 
@@ -177,7 +195,7 @@ export function bootstrap(s, p, opts = {}) {
     const parents = (P(cs.loaded, {})?.sessions || []).map((id) => byId.get(id)).filter(Boolean);
     const live = x && x.live ? ` · active ${ago(x.last_active)}, not ended${c.quality === 'auto' ? ' (its unsaved work, as an auto card)' : ''}` : '';
     const meta = cardMeta(cs, x) + live + (parents.length ? ` · continues ${parents.map(S.ref).join(', ')}` : '');
-    const t = fmtCard(S.card(cs.id), meta, { commits: log.filter((l) => l.at > Date.parse(c.at)).map((l) => l.text) });
+    const t = fmtCard(S.card(cs.id), meta, { commits: log.filter((l) => l.at > Date.parse(c.at)).map((l) => l.text), sessionId: cs.id });
     if (take(t, budget * 0.45) || !cardTexts.length) { cardTexts.push(t); loadedCards.push(x || { id: cs.id, seq: cs.seq }); }
   }
   const mustTexts = [], knowTexts = [];
@@ -187,7 +205,7 @@ export function bootstrap(s, p, opts = {}) {
 
   const mode = p.mode || 'first run';
   const cur = s && S.session(s.id);
-  let out = `# UAC · ${p.name} · branch \`${p.branch || '-'}\` · mode ${mode} · ${cur ? `${cur.capture === 'on' ? 'recording ON' : 'not recording'} · this session ${cur.seq ? `#${cur.seq} ` : ''}${S.shortId(cur.id)} (session_id=${cur.id})` : ''}\n` +
+  let out = `# UAC · ${p.name} · branch \`${p.branch || '-'}\`${here ? ` · package \`${here}\` (other packages' knowledge not loaded)` : ''} · mode ${mode} · ${cur ? `${cur.capture === 'on' ? 'recording ON' : 'not recording'} · this session ${cur.seq ? `#${cur.seq} ` : ''}${S.shortId(cur.id)} (session_id=${cur.id})` : ''}\n` +
     `Memory = claims, not facts: ✓ matches the code at its anchor · ⚠ file changed since · ✗ anchor gone · (no anchor) can't be checked. Check one only when your task touches it, at its anchored path (relative to the project root); then uac_verify {ids} or uac_update.\n`;
   const knowledgeTokens = [...mustTexts, ...knowTexts].reduce((a, i) => a + tokens(i.text), 0);
   if (!cards.length && knowledgeTokens < NEAR_EMPTY_TOKENS)
@@ -217,8 +235,8 @@ export function bootstrap(s, p, opts = {}) {
   const wider = [omitted > 0 && `uac_bootstrap{depth:"deep"} (+${omitted} knowledge items)`, notLoaded.length && `uac_bootstrap{sessions:["${S.ref(notLoaded[0]).split(' ')[0]}"]}`,
     rawRef && `uac_get{ids:["${S.ref(rawRef).split(' ')[0]}"], raw:true} (exact history)`].filter(Boolean);
   const loaded = `Loaded ~${used} tok: ${loadedCards.length ? loadedCards.map((x) => `card ${S.ref(x)}`).join(' + ') : 'no session card'} + ${mustTexts.length + knowTexts.length}/${items.length} knowledge items. ` +
-    (notLoaded.length || omitted > 0
-      ? `Not loaded: ${[notLoaded.slice(0, 4).map((x) => `${S.ref(x)} "${clip(x.title || x.card?.title || x.agent, 40)}" (${state(x)})`).join(' · ') + (notLoaded.length > 4 ? ` · +${notLoaded.length - 4} more (uac_sessions)` : ''), omitted > 0 && `${omitted} knowledge items`].filter(Boolean).join('; ')}. Wider: ${wider.join(' · ')}`
+    (notLoaded.length || omitted > 0 || otherPkg > 0
+      ? `Not loaded: ${[notLoaded.slice(0, 4).map((x) => `${S.ref(x)} "${clip(x.title || x.card?.title || x.agent, 40)}" (${state(x)})`).join(' · ') + (notLoaded.length > 4 ? ` · +${notLoaded.length - 4} more (uac_sessions)` : ''), omitted > 0 && `${omitted} knowledge items`, otherPkg > 0 && `${otherPkg} knowledge items about other packages (uac_search finds them)`].filter(Boolean).join('; ')}. Wider: ${wider.join(' · ')}`
       : `Nothing else stored.${rawRef ? ` Exact history: uac_get{ids:["${S.ref(rawRef).split(' ')[0]}"], raw:true}` : ''}`);
 
   if (record && s) run('UPDATE sessions SET loaded = ? WHERE id = ?', J({ sessions: cards.map((x) => x.s.id), checkpoints: cards.map((x) => x.c.checkpoint_id).filter(Boolean), goal, depth, fresh: freshStart, one_shot: oneShot, msgs: msgs.map((m) => m.id) }), s.id);
@@ -272,7 +290,7 @@ export function startContext(s, p, { source } = {}) {
     b.text = `[UAC] Context was compacted; re-loaded below. Compaction is not a UAC save${n ? `: ${n} event(s) of this session are still unsaved (the Stop hook asks for the save when it is due)` : ''}.\n\n${b.text}`;
     // this session's own saved card (the compacted conversation included it) + the snapshot of what came after it
     const mine = S.card(s.id);
-    if (mine && mine.quality !== 'auto' && mine.summary_id) b.text += `\n## This session so far (its saved card)\n${fmtCard({ ...mine, tail: null }, 'this session')}\n`;
+    if (mine && mine.quality !== 'auto' && mine.summary_id) b.text += `\n## This session so far (its saved card)\n${fmtCard({ ...mine, tail: null }, 'this session', { sessionId: s.id })}\n`;
     const snap = get(`SELECT * FROM checkpoints WHERE session_id = ? AND trigger = 'precompact' ORDER BY ts DESC LIMIT 1`, s.id);
     if (snap) b.text += `\n## ${mine?.summary_id ? 'Since that card' : 'Pre-compaction snapshot'} (unsaved)\n${fmtCard({ title: snap.goal, broken: snap.broken, files: P(snap.files, []), next_steps: P(snap.next_steps, []), note: snap.note }, 'this session')}`;
   } else b = bootstrap(s, p, { budget_tokens: START_BUDGET });
@@ -284,7 +302,7 @@ export function startContext(s, p, { source } = {}) {
   if (source === 'resume') {
     const mine = S.card(s.id), unsavedMine = S.unsavedCount(s);
     const since = unsavedMine ? get(`SELECT MIN(ts) AS t FROM events WHERE session_id = ? AND id > ? AND kind != 'pending'`, s.id, s.saved_event_id).t : null;
-    if (mine && mine.quality !== 'auto') L.push(`This session was saved before ("${clip(mine.title, 60)}"). New work is recorded in the same session; the next save UPDATES that same card (it covers the whole session).`);
+    if (mine && mine.quality !== 'auto') L.push(`This session was saved before ("${clip(mine.title, 60)}"). New work is recorded in the same session; the next save adds a new chapter to it (earlier chapters stay as they are).`);
     if (unsavedMine) L.push(`This session has ${unsavedMine} unsaved event(s) since ${ago(since)}${mine?.quality === 'auto' ? ' (only an auto card so far)' : ''}. "#uac save" writes/updates its card.`);
     let bytes = 0;
     try { bytes = s.transcript_path ? fs.statSync(s.transcript_path).size : 0; } catch {}
@@ -333,57 +351,60 @@ function diffSince(p, s) {
 export function digest(s, maxChars = 60000) {
   const p = S.projectFor(S.project(s.project_id).root);
   const evs = all(`SELECT * FROM events WHERE session_id = ? AND id > ? AND kind != 'pending' ORDER BY id`, s.id, s.saved_event_id);
+  // Paged, never cut: when the unsaved events exceed maxChars, this digest stops at a page boundary (upto_event_id) and
+  // the rest becomes the next chapter at the next save. Nothing is dropped from the middle.
   const lines = [];
-  let prev = '';
+  let prev = '', size = 0, upto = s.saved_event_id, taken = 0;
   for (const e of evs) {
     const key = `${e.kind}|${e.tool}|${e.target}`;
-    if (key === prev && e.kind === 'tool') continue;
+    let line = null;
+    if (!(key === prev && e.kind === 'tool')) {
+      if (e.kind === 'prompt') line = `USER: ${e.body}`;
+      else if (e.kind === 'tool') line = `  tool ${e.tool}${e.target ? ` ${e.target}` : ''}`;
+      else if (e.kind === 'tool_fail') line = `  FAILED ${e.tool} ${e.target || ''}: ${clip(e.body, 400)}`;
+      else if (e.kind === 'subagent') line = `  subagent result: ${clip(e.body, 600)}`;
+      else if (e.kind === 'assistant') line = `ASSISTANT: ${clip(e.body, 800)}`;
+      else if (e.kind === 'card') line = `PREVIOUS SESSION CARD (merge/rollup, combine into one):\n${clip(e.body, 2500)}`;
+      else line = `  ${e.kind}: ${clip(e.body, 300)}`;
+    }
     prev = key;
-    if (e.kind === 'prompt') lines.push(`USER: ${e.body}`);
-    else if (e.kind === 'tool') lines.push(`  tool ${e.tool}${e.target ? ` ${e.target}` : ''}`);
-    else if (e.kind === 'tool_fail') lines.push(`  FAILED ${e.tool} ${e.target || ''}: ${clip(e.body, 400)}`);
-    else if (e.kind === 'subagent') lines.push(`  subagent result: ${clip(e.body, 600)}`);
-    else if (e.kind === 'assistant') lines.push(`ASSISTANT: ${clip(e.body, 800)}`);
-    else if (e.kind === 'card') lines.push(`PREVIOUS SESSION CARD (merge/rollup, combine into one):\n${clip(e.body, 2500)}`);
-    else lines.push(`  ${e.kind}: ${clip(e.body, 300)}`);
+    if (line && lines.length && size + line.length + 1 > maxChars) break;
+    if (line) { lines.push(line); size += line.length + 1; }
+    upto = e.id; taken++;
   }
-  let text = lines.join('\n');
-  // Large session: plain tool calls go first (diff_stat still lists every changed file), then the middle, but every
-  // user request survives (clipped), because the goals and decisions live there.
-  // ponytail: head + requests + tail; map-reduce chunking if sessions routinely exceed even that
-  if (text.length > maxChars) text = lines.filter((l) => !l.startsWith('  tool ')).join('\n');
-  if (text.length > maxChars) {
-    const head = text.slice(0, maxChars * 0.25), tail = text.slice(-maxChars * 0.55);
-    const asks = text.slice(head.length, text.length - tail.length).split('\n').filter((l) => l.startsWith('USER: ')).map((l) => clip(l, 240));
-    const mid = asks.join('\n').slice(-maxChars * 0.2);
-    text = `${head}\n  …[middle: replies and tool results omitted; the user requests below are kept]…\n${mid}\n  …\n${tail}`;
-  }
-  const goal = evs.find((e) => e.kind === 'prompt')?.body || '';
+  const text = lines.join('\n');
+  const more = evs.length - taken;
+  const page = evs.slice(0, taken);
+  const goal = page.find((e) => e.kind === 'prompt')?.body || '';
   const d = diffSince(p, s);
-  const touched = new Set([...d.files, ...evs.map((e) => e.target).filter(Boolean)].map((f) => String(f).replace(/\\/g, '/')));
+  const touched = new Set([...d.files, ...page.map((e) => e.target).filter(Boolean)].map((f) => String(f).replace(/\\/g, '/')));
   const recheck = all(`SELECT * FROM memories WHERE project_id = ? AND status IN ('active','stale')`, s.project_id).map(S.hydrate)
     .filter((m) => [...m.files, ...m.anchors.map((a) => a.file)].some((f) => [...touched].some((t) => t.endsWith(f) || f.endsWith(t))))
     .slice(0, 20).map(({ id, type, title, body, anchors, files }) => ({ id, type, title, body, anchors, files }));
   const existing = all(`SELECT id, type, title FROM memories WHERE (project_id = ? OR project_id IS NULL) AND status IN ('active','proposed','stale')
       ORDER BY pinned DESC, importance DESC, updated_at DESC LIMIT 80`, s.project_id);
-  // saved before and continued (same session): the new card must cover the WHOLE session, so hand over the current card
+  // continuity with the previous chapter: its title/goal, and the session's open next steps, numbered, so the compressor
+  // closes them by number (checkpoint.closed) and save() carries the rest forward word for word
   const prevCard = S.card(s.id);
-  const previous_card = prevCard && prevCard.quality !== 'auto' ? { title: prevCard.title, body: prevCard.body, working: prevCard.working, broken: prevCard.broken, next_steps: prevCard.next_steps, files: prevCard.files, note: prevCard.note } : null;
+  const previous_chapter = prevCard && prevCard.quality !== 'auto' ? { title: prevCard.title, goal: prevCard.goal } : null;
+  const open_items = prevCard && prevCard.quality !== 'auto' ? (prevCard.next_steps || []).map((t, i) => `${i + 1}. ${t}`) : [];
   // open tasks are reconciled every save (not only when their anchors changed): finished work must close its task
   const open_tasks = all(`SELECT id, title, body FROM memories WHERE project_id = ? AND type = 'task' AND status IN ('active','stale') ORDER BY updated_at DESC LIMIT 10`, s.project_id)
     .map((m) => ({ ...m, body: clip(m.body, 200) }));
   return { session_id: s.id, branch: s.branch, goal: clip(goal || prevCard?.goal || s.title || '', 500),
-    base_event_id: s.saved_event_id, upto_event_id: evs.at(-1)?.id ?? s.saved_event_id,
-    events: text, diff_stat: d.stat, recheck, open_tasks, duplicates: duplicates(s.project_id), existing, previous_card,
-    how_to_save: HOW_TO_SAVE,
-    instructions: previous_card ? 'This session was saved before and then continued. Write the summary and checkpoint as ONE updated card for the whole session: keep what still holds from previous_card, add the new work, drop what is done or no longer true.' : undefined };
+    base_event_id: s.saved_event_id, upto_event_id: upto,
+    events: text, diff_stat: d.stat, recheck, open_tasks, duplicates: duplicates(s.project_id), existing, previous_chapter, open_items,
+    more: more || undefined,
+    note: more ? `Paged: this digest stops at upto_event_id; ${more} later event(s) become the next chapter at the next save. Summarise only these events.` : undefined,
+    how_to_save: HOW_TO_SAVE };
 }
+
 
 // Self-contained recipe: whoever calls uac_digest (the compressor, a general-purpose agent, another host's main agent) can save.
 const HOW_TO_SAVE = [
   'Make ONE uac_save call: {session_id, base_event_id, upto_event_id (copy all three from this digest), model: <your model id>,',
-  '  summary:{title: verb+object+outcome with the main path, body: plain prose, ~200 words, longer only if many decisions} (required),',
-  '  checkpoint:{goal, working, broken, files:[], next_steps:[], note: what I\'d tell the next dev, gaps: what you left out or did not verify} (required: goal, and next_steps or note),',
+  '  summary:{title: verb+object+outcome with the main path, body: plain prose, ~150-250 words} (required): ONE chapter about ONLY the events in this digest (earlier chapters stay as they are; do not re-summarise them),',
+  '  checkpoint:{goal, working, broken, files:[], next_steps:[] (only NEW open work), closed:[numbers of open_items this chapter finished], note: what I\'d tell the next dev, gaps: what you left out or did not verify} (required: goal, and next_steps or note). Open items you do not close carry forward automatically,',
   '  candidates:[{op: add|update|supersede|conflict|verify|done|noop, id? (ids:[…] with supersede merges duplicates into one), type, title, body, why?, anchors:[{file,symbol,line}], confidence}]}',
   'One candidate per recheck item (verify/update/supersede); op "done" for each open_task this session finished; merge real duplicates; durable knowledge only, no secrets. Git is not required. An incomplete card is refused and nothing is deleted.',
 ].join('\n');
@@ -444,18 +465,28 @@ export function save(s, p, { base_event_id, upto_event_id, summary, checkpoint, 
   run(`DELETE FROM summaries WHERE session_id = ? AND quality = 'auto'`, s.id);
   run(`DELETE FROM checkpoints WHERE session_id = ? AND trigger = 'auto'`, s.id);
   res.summary = uid('s');
-  // events this card covers, cumulative across saves of the same session (the card replaces the previous one)
+  // A save is a CHAPTER: it describes only its own events and is never rewritten. Open next steps carry forward in code,
+  // not by the model: an item leaves only when its number (from the digest's open_items) is in checkpoint.closed.
   const prev = S.card(s.id);
-  const covered = (prev?.quality === 'llm' ? prev.events_n || 0 : 0)
-    + get(`SELECT COUNT(*) AS n FROM events WHERE session_id = ? AND id > ? AND id <= ? AND kind != 'pending'`, s.id, s.saved_event_id, upto).n;
-  run('INSERT INTO summaries(id, session_id, project_id, title, body, raw_chars, created_at, quality, model, events_n) VALUES (?,?,?,?,?,?,?,?,?,?)',
-    res.summary, s.id, p.id, clip(summary.title, 200), summary.body || '', raw, now(), 'llm', model ?? null, covered);
+  const range = get(`SELECT COUNT(*) AS n, MIN(ts) AS t FROM events WHERE session_id = ? AND id > ? AND id <= ? AND kind != 'pending'`, s.id, s.saved_event_id, upto);
+  const closed = new Set((Array.isArray(checkpoint.closed) ? checkpoint.closed : []).map(Number));
+  const fresh = (checkpoint.next_steps || []).map(String);
+  const bare = (t) => t.replace(/ \(open since ch\d+\)$/, '').trim().toLowerCase();
+  const prevNo = prev?.chapter_no || (prev ? 1 : 0);
+  const carried = prev?.quality === 'auto' ? [] : (prev?.next_steps || [])
+    .filter((t, i) => !closed.has(i + 1) && !fresh.some((f) => bare(f) === bare(t)))
+    .map((t) => (/ \(open since ch\d+\)$/.test(t) ? t : `${t} (open since ch${prevNo})`));
+  for (const n of closed) if (!(n >= 1 && n <= (prev?.next_steps?.length || 0))) res.warnings.push(`closed: ${n} is not an open item number (ignored)`);
+  run('INSERT INTO summaries(id, session_id, project_id, title, body, raw_chars, created_at, quality, model, events_n, from_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+    res.summary, s.id, p.id, clip(summary.title, 200), summary.body || '', raw, now(), 'llm', model ?? null, range.n, range.t ?? now());
   run('UPDATE sessions SET title = ? WHERE id = ?', clip(summary.title, 120), s.id);
-  res.checkpoint = addCheckpoint(s, checkpoint, 'save');
-  // consolidation: this card supersedes older checkpoints of this session and the ones it loaded on the same branch
+  res.checkpoint = addCheckpoint(s, { ...checkpoint, next_steps: [...fresh, ...carried] }, 'save');
+  run('UPDATE summaries SET checkpoint_id = ? WHERE id = ?', res.checkpoint, res.summary);
+  // the cards this session loaded from OTHER sessions on its branch are continued here (this session's own earlier
+  // chapters stay whole: they are its history)
   const loaded = P(s.loaded, {}).checkpoints || [];
-  run(`UPDATE checkpoints SET superseded_by = ? WHERE id != ? AND superseded_by IS NULL AND (session_id = ?
-       OR (id IN (SELECT value FROM json_each(?)) AND session_id IN (SELECT id FROM sessions WHERE branch IS ?)))`,
+  run(`UPDATE checkpoints SET superseded_by = ? WHERE id != ? AND superseded_by IS NULL AND session_id != ?
+       AND id IN (SELECT value FROM json_each(?)) AND session_id IN (SELECT id FROM sessions WHERE branch IS ?)`,
     res.checkpoint, res.checkpoint, s.id, J(loaded), s.branch);
   // on a feature branch, project knowledge is not rewritten with facts that exist only on this branch: the change becomes a
   // branch version that replaces the original when the branch is merged (store.promoteBranches)
@@ -500,7 +531,8 @@ export function save(s, p, { base_event_id, upto_event_id, summary, checkpoint, 
   // the card replaces the raw events (nothing to compress again), except the last few turns, kept as a small raw fallback
   res.events_removed = run(`DELETE FROM events WHERE session_id = ? AND id <= ? AND id NOT IN (SELECT id FROM events WHERE session_id = ? AND id <= ?
       AND kind IN ('prompt','assistant') ORDER BY id DESC LIMIT ${KEEP_TURNS})`, s.id, upto, s.id, upto).changes;
-  run(`UPDATE sessions SET saved_event_id = MAX(saved_event_id, ?), quality = 'llm' WHERE id = ?`, upto, s.id); // the card records the compressor's model; the session keeps its own
+  // (save_asked capped at upto: a paged save that stopped early is not a save that "did not land")
+  run(`UPDATE sessions SET saved_event_id = MAX(saved_event_id, ?), save_asked = MIN(save_asked, ?), quality = 'llm' WHERE id = ?`, upto, upto, s.id); // the card records the compressor's model; the session keeps its own
   try { res.exported = S.exportProjectMd(p); } catch (e) { res.errors.push(`export: ${e.message}`); }
   checkpointWal();
   return res;
@@ -622,6 +654,6 @@ export function handoff(s, p) {
 export function sessionsIndex(p, s, { limit = 15, all: withHidden = false } = {}) {
   const rows = S.listSessions(p.id, { limit: Math.min(Number(limit) || 15, 100), all: withHidden });
   if (!rows.length) return 'no sessions yet in this project';
-  return rows.map((x) => `${x.n ? `#${x.n}` : '(hidden)'} ${x.short} · ${x.branch || '-'} · ${x.agent} · ${ago(x.last_active || x.started_at)} · ${state(x, s?.id)} · ${x.title || x.card?.title ? `"${clip(x.title || x.card?.title, 70)}"` : '(untitled)'}`).join('\n') +
+  return rows.map((x) => `${x.n ? `#${x.n}` : '(hidden)'} ${x.short} · ${x.branch || '-'}${x.area ? ` · in ${x.area}` : ''} · ${x.agent} · ${ago(x.last_active || x.started_at)} · ${state(x, s?.id)} · ${x.title || x.card?.title ? `"${clip(x.title || x.card?.title, 70)}"` : '(untitled)'}`).join('\n') +
     '\nUse #n, the short id or the full id in uac_get {ids}, uac_bootstrap {sessions}, uac_message {to:"session:<id>"}.';
 }

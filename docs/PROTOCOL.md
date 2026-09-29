@@ -55,14 +55,16 @@ Memory lines look like `- **Title**: body · \`computeRowPlan@src/layout.js:42\`
 When the user types `#uac save`, a hook asks for a save (`[UAC] Save requested…`, or another session "ended with N unsaved events"), or the work is done:
 1. If your host has subagents, delegate this to a cheap one. Otherwise do it yourself.
 2. Load the tools if they are deferred (ToolSearch `uac_digest`, `uac_save`).
-3. `uac_digest({session_id})`. Always pass `session_id` explicitly. It returns `{session_id, goal, base_event_id, upto_event_id, events, existing, diff_stat, recheck, open_tasks, duplicates, previous_card, how_to_save}`.
+3. `uac_digest({session_id})`. Always pass `session_id` explicitly. It returns `{session_id, goal, base_event_id, upto_event_id, events, existing, diff_stat, recheck, open_tasks, duplicates, previous_chapter, open_items, more, how_to_save}`.
    - `diff_stat` covers all changes since the session started, including subagent and background edits.
    - Every `recheck` item is a memory whose anchored files changed: check it at its anchored path and emit `verify`, `update`, `supersede` or `conflict`.
    - `open_tasks`: close finished ones with `op:'done'`; update the ones still in progress.
    - `duplicates`: groups of same-type memories that overlap. Merge real duplicates with one `op:'supersede'` and `ids:[…]`.
-   - `previous_card`: this session was saved before. Write ONE card for the whole session.
+   - Every save is a **chapter**: summarise ONLY the events in this digest. Earlier chapters stay as they are.
+   - `open_items`: the session's open next steps, numbered. Put the finished ones' numbers in `checkpoint.closed`; the rest carry forward automatically. Put only new work in `next_steps`.
+   - `more`: the digest is paged; the later events become the next chapter at the next save.
    - `how_to_save` is the full recipe for step 4.
-4. ONE `uac_save({session_id, base_event_id, upto_event_id, model:<your model id>, summary:{title, body}, checkpoint:{goal, working, broken, files:[], next_steps:[], note, gaps}, candidates:[…]})`.
+4. ONE `uac_save({session_id, base_event_id, upto_event_id, model:<your model id>, summary:{title, body}, checkpoint:{goal, working, broken, files:[], next_steps:[], closed:[], note, gaps}, candidates:[…]})`.
    - `summary` and `checkpoint` are **required objects**: `summary` needs a `title`; `checkpoint` needs a `goal` plus `next_steps` or a `note`. An incomplete card is refused and nothing is written or deleted; the error says what to fix.
    - Copy `session_id`, `base_event_id` and `upto_event_id` from the digest. A stale `base_event_id` (another save got there first) is rejected.
    - `summary.title`: verb + object + outcome, e.g. `Add per-user login rate limiter in src/auth.js (in-memory Map)`. `body` about 200 words.

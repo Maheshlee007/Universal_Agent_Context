@@ -290,7 +290,7 @@ test('resume of a long session shows the token-cost tip', () => {
   cli('rm', 'sess-long', '--yes');
 });
 
-test('continuing the SAME session: resume reactivates it, reports unsaved work, next save gets previous_card to update one card', async () => {
+test('continuing the SAME session: resume reactivates it, reports unsaved work, next save adds a chapter with the open items', async () => {
   hook('SessionStart', { session_id: 'sess-cont', source: 'startup' });
   hook('UserPromptSubmit', { session_id: 'sess-cont', prompt: 'Build CSV export' });
   await callTool('uac_save', { session_id: 'sess-cont', upto_event_id: 1e9, summary: { title: 'Build CSV export (part 1)' }, checkpoint: { goal: 'csv', next_steps: ['add headers'], note: 'n' }, candidates: [] });
@@ -298,15 +298,15 @@ test('continuing the SAME session: resume reactivates it, reports unsaved work, 
   assert.equal(S.session('sess-cont').status, 'ended');
   const c = ctxOf(hook('SessionStart', { session_id: 'sess-cont', source: 'resume' }));
   assert.equal(S.session('sess-cont').status, 'active', 'resumed session is live again');
-  assert.match(c, /saved before \("Build CSV export \(part 1\)"\)[\s\S]*UPDATES that same card/);
+  assert.match(c, /saved before \("Build CSV export \(part 1\)"\)[\s\S]*adds a new chapter/);
   hook('UserPromptSubmit', { session_id: 'sess-cont', prompt: 'now add headers' });
   hook('PostToolUse', { session_id: 'sess-cont', tool_name: 'Edit', tool_input: { file_path: 'src/csv.js' }, tool_response: 'ok' });
   hook('PostToolUse', { session_id: 'sess-cont', tool_name: 'Edit', tool_input: { file_path: 'src/csv2.js' }, tool_response: 'ok' });
   const c2 = ctxOf(hook('SessionStart', { session_id: 'sess-cont', source: 'resume' }));
   assert.match(c2, /3 unsaved event\(s\) since/);
   const dg = await callTool('uac_digest', { session_id: 'sess-cont' });
-  assert.equal(dg.previous_card.title, 'Build CSV export (part 1)');
-  assert.match(dg.instructions, /ONE updated card for the whole session/);
+  assert.equal(dg.previous_chapter.title, 'Build CSV export (part 1)');
+  assert.deepEqual(dg.open_items, ['1. add headers']);
   await callTool('uac_save', { session_id: 'sess-cont', upto_event_id: dg.upto_event_id, summary: { title: 'Build CSV export with headers' }, checkpoint: { goal: 'csv', note: 'done' }, candidates: [] });
   assert.equal(S.card('sess-cont').title, 'Build CSV export with headers');
   assert.equal(S.listSessions(pid()).filter((x) => x.id === 'sess-cont').length, 1, 'still one session');
@@ -515,17 +515,43 @@ test('v0.5: stable #n + refs, save validation, project scoping, non-git subfolde
   g('checkout', '-q', 'main');
 });
 
-test('large session digest keeps every user request (tool noise dropped first)', () => {
-  S.ensureSession({ host: 'claude', session_id: 'sess-big', cwd: repo });
-  for (let i = 0; i < 300; i++) {
-    S.addEvent(S.session('sess-big'), 'prompt', { body: `request number ${i} please` });
-    S.addEvent(S.session('sess-big'), 'tool', { tool: 'Read', target: `src/f${i}.js` });
-    S.addEvent(S.session('sess-big'), 'assistant', { body: 'x'.repeat(700) });
-  }
-  const d = K.digest(S.session('sess-big'), 60000);
-  assert.ok(d.events.length < 64000, `digest bounded: ${d.events.length}`);
-  for (const i of [0, 150, 299]) assert.match(d.events, new RegExp(`request number ${i} please`));
-  assert.doesNotMatch(d.events, /tool Read src\/f150\.js/);
+test('chapters: each save is a chapter; open items carried by code; digest pages, never cuts; uac_get opens a chapter', async () => {
+  const sid = 'sess-chapters';
+  S.ensureSession({ host: 'claude', session_id: sid, cwd: repo });
+  const P0 = () => S.projectFor(repo);
+  const saveCh = (n, next, closed) => { const d = K.digest(S.session(sid)); return K.save(S.session(sid), P0(), { base_event_id: d.base_event_id, upto_event_id: d.upto_event_id, model: 't',
+    summary: { title: `Chapter ${n} work`, body: `did part ${n}` }, checkpoint: { goal: `goal ${n}`, next_steps: next, note: 'n', closed, files: [`src/part${n}.js`] } }); };
+  S.addEvent(S.session(sid), 'prompt', { body: 'first part' });
+  saveCh(1, ['write docs', 'fix login']);
+  S.addEvent(S.session(sid), 'prompt', { body: 'second part' });
+  assert.deepEqual(K.digest(S.session(sid)).open_items, ['1. write docs', '2. fix login']);
+  const r = saveCh(2, ['add tests'], [2, 9]);
+  assert.match(r.warnings.join('\n'), /closed: 9 is not an open item/);
+  const ch = S.chapters(sid);
+  assert.deepEqual(ch.map((c) => c.title), ['Chapter 1 work', 'Chapter 2 work']);
+  assert.equal(ch[1].events_n, 1, 'a chapter counts only its own events');
+  const c = S.card(sid);
+  assert.equal(c.chapters, 2);
+  assert.equal(c.title, 'Chapter 2 work');
+  assert.deepEqual(c.next_steps, ['add tests', 'write docs (open since ch1)'], 'closed item gone, open one carried verbatim');
+  // start context: latest chapter in full + earlier chapters as index lines with files
+  const txt = K.bootstrap(null, P0(), { sessions: [sid], record: false }).text;
+  assert.match(txt, /chapter 2\/2/);
+  assert.match(txt, /Session goal \(chapter 1\): goal 1/);
+  assert.match(txt, /Earlier chapters \(titles only[^\n]*\n- s-[0-9a-f]{6} · [^\n]*"Chapter 1 work" · files: src\/part1\.js/);
+  // drill-down
+  const [g] = await callTool('uac_get', { session_id: sid, ids: [ch[0].id] });
+  assert.equal(g.chapter.title, 'Chapter 1 work');
+  assert.equal(g.checkpoint.goal, 'goal 1');
+  const [gs] = await callTool('uac_get', { session_id: sid, ids: [sid] });
+  assert.equal(gs.chapters.length, 2);
+  // paging: nothing cut from the middle; the rest is left for the next chapter
+  for (let i = 0; i < 60; i++) S.addEvent(S.session(sid), 'assistant', { body: `reply ${i} ${'y'.repeat(700)}` });
+  const d = K.digest(S.session(sid), 20000);
+  assert.ok(d.more > 0 && d.events.length <= 20000, `paged: more=${d.more} len=${d.events.length}`);
+  assert.doesNotMatch(d.events, /omitted/);
+  const last = Number(d.events.match(/reply (\d+) y+$/)[1]);
+  assert.equal(d.more, 59 - last, 'upto_event_id is the page boundary');
 });
 
 test('invented anchor symbol is dropped before storing (file anchor kept, warning returned)', async () => {
@@ -536,4 +562,42 @@ test('invented anchor symbol is dropped before storing (file anchor kept, warnin
   assert.match(text, /symbol `noSuchFunctionHere` is not in src\/auth\.js/);
   const m = S.memory(text.match(/m-[0-9a-f]{6}/)[0]);
   assert.deepEqual(m.anchors.map((a) => a.symbol ?? null), [null, 'rotateRefreshToken']);
+});
+
+test('monorepo: sessions and knowledge carry their package; a session inside a package sees only its own + repo-wide', () => {
+  const mono = path.join(tmp, 'mono');
+  for (const d of ['apps/web/src', 'apps/api/src']) fs.mkdirSync(path.join(mono, d), { recursive: true });
+  fs.writeFileSync(path.join(mono, 'package.json'), '{"name":"mono","private":true}');
+  fs.writeFileSync(path.join(mono, 'pnpm-workspace.yaml'), "packages:\n  - 'apps/*'\n");
+  for (const a of ['web', 'api']) { fs.writeFileSync(path.join(mono, 'apps', a, 'package.json'), `{"name":"${a}"}`); fs.writeFileSync(path.join(mono, 'apps', a, 'src', 'main.js'), `export const ${a}Main = 1;\n`); }
+  fs.writeFileSync(path.join(mono, 'README.md'), '# mono\n');
+  const gm = (...a) => spawnSync('git', a, { cwd: mono, encoding: 'utf8' });
+  gm('init', '-q', '-b', 'main'); gm('config', 'user.email', 't@t'); gm('config', 'user.name', 't'); gm('add', '.'); gm('commit', '-qm', 'init');
+  assert.deepEqual([...S.packagesOf(mono)].sort(), ['apps/api', 'apps/web']);
+  const root = S.ensureSession({ host: 'claude', session_id: 'mono-root', cwd: mono }).s;
+  const p = S.projectFor(mono);
+  S.propose({ type: 'fact', title: 'Web entry is webMain', body: 'web app starts in webMain', anchors: [{ file: 'apps/web/src/main.js', symbol: 'webMain' }], confidence: 0.9 }, { s: root, p });
+  S.propose({ type: 'fact', title: 'Api entry is apiMain', body: 'api server starts in apiMain', anchors: [{ file: 'apps/api/src/main.js', symbol: 'apiMain' }], confidence: 0.9 }, { s: root, p });
+  S.propose({ type: 'fact', title: 'Readme is the monorepo overview', body: 'docs at the root', anchors: [{ file: 'README.md' }], confidence: 0.9 }, { s: root, p });
+  // at the repo root: everything, tagged with its package
+  const all = K.bootstrap(root, p, { record: false }).text;
+  assert.match(all, /\[in apps\/api\] \*\*Api entry/);
+  assert.match(all, /\[in apps\/web\] \*\*Web entry/);
+  assert.match(all, /- \*\*Readme is the monorepo overview/);
+  // inside apps/web: its own + repo-wide; apps/api counted, not loaded
+  const web = S.ensureSession({ host: 'claude', session_id: 'mono-web', cwd: path.join(mono, 'apps', 'web') }).s;
+  assert.equal(web.area, 'apps/web');
+  assert.equal(web.project_id, p.id, 'one project for the whole repo');
+  const b = K.bootstrap(web, S.projectFor(path.join(mono, 'apps', 'web')), { record: false });
+  assert.match(b.text, /package `apps\/web`/);
+  assert.match(b.text, /Web entry is webMain/);
+  assert.match(b.text, /Readme is the monorepo overview/);
+  assert.doesNotMatch(b.text, /Api entry/);
+  assert.match(b.loaded, /1 knowledge items about other packages/);
+  // no workspace config and no root manifest: folders with their own manifest are the packages (Backend/ + Frontend/)
+  const bf = path.join(tmp, 'bf');
+  for (const d of ['Backend', 'Frontend']) { fs.mkdirSync(path.join(bf, d), { recursive: true }); fs.writeFileSync(path.join(bf, d, 'package.json'), '{}'); }
+  assert.deepEqual([...S.packagesOf(bf)].sort(), ['Backend', 'Frontend']);
+  assert.equal(S.areaOf(bf, path.join(bf, 'Frontend', 'src', 'x.tsx')), 'Frontend');
+  assert.deepEqual(S.packagesOf(repo), [], 'a plain repo has no packages');
 });

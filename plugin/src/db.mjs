@@ -87,6 +87,10 @@ const V3_COLUMNS = [
   // v0.5: seq = stable per-project session number (#n never moves); hook/mcp_version = which UAC served this session;
   // save_retry = the save request (event id) we already asked to retry once
   ['sessions', 'seq INTEGER'], ['sessions', 'hook_version TEXT'], ['sessions', 'mcp_version TEXT'], ['sessions', 'save_retry INTEGER DEFAULT 0'], ['sessions', 'ver_warned INTEGER DEFAULT 0'], ['sessions', 'end_commit TEXT'], ['sessions', 'root TEXT'], ['sessions', 'start_tree TEXT'], ['sessions', 'start_untracked TEXT'],
+  // v0.6: a summary is a chapter (one per save, about its own events): its checkpoint and the ts of its first event
+  ['summaries', 'checkpoint_id TEXT'], ['summaries', 'from_ts TEXT'],
+  // v0.6: the monorepo package the session was started in (null = repo root or not a monorepo)
+  ['sessions', 'area TEXT'],
 ];
 function migrate() {
   for (const [t, col] of V3_COLUMNS) { try { db.exec(`ALTER TABLE ${t} ADD COLUMN ${col}`); } catch { /* exists */ } }

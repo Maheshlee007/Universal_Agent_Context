@@ -14,9 +14,11 @@ You call the uac MCP tools. You may also Read/Grep/Glob files and run `git` to c
    `select:mcp__plugin_universal-agent-context_uac__uac_digest,mcp__plugin_universal-agent-context_uac__uac_save`
    If that loads nothing, call ToolSearch with `uac_digest`, then with `uac_save` (other installs name them `mcp__uac__uac_digest` / `mcp__uac__uac_save`). Never stop because a tool "is not available": load it. Your task is not done until `uac_save` succeeded or the digest said there is nothing new.
 1. Call `uac_digest({session_id})` with the session id you were given (omit it if you weren't given one).
-   - The result is `{session_id, goal, base_event_id, upto_event_id, events, existing, diff_stat, recheck, open_tasks, duplicates, previous_card, how_to_save}`.
-   - **`previous_card` present** means this session was saved before and then continued (same session, resumed later). Your summary and checkpoint REPLACE that card, so they must cover the WHOLE session: keep what still holds from `previous_card`, add the new work from `events`, and drop next steps that are now done. Never write a card that covers only the new events.
-   - `events` can contain `PREVIOUS SESSION CARD` blocks (from a merge or a rollup). Combine all of them and the new events into ONE card.
+   - The result is `{session_id, goal, base_event_id, upto_event_id, events, existing, diff_stat, recheck, open_tasks, duplicates, previous_chapter, open_items, more, how_to_save}`.
+   - **You write ONE chapter.** Every save is a permanent chapter of the session, about ONLY the events in this digest. Earlier chapters stay as they are: never re-summarise them. `previous_chapter` (title and goal) is there only for continuity.
+   - **`open_items`** are the session's open next steps, numbered. Put the numbers of the ones this chapter finished in `checkpoint.closed`. Put only NEW open work in `next_steps`. UAC carries every open item you don't close forward, word for word.
+   - **`more`** means the digest is paged: later events become the next chapter at the next save. Summarise only what you got.
+   - `events` can contain `PREVIOUS SESSION CARD` blocks (from a merge or a rollup). Combine all of them and the new events into ONE chapter.
    - If `events` is empty, `diff_stat` is empty and `recheck` is empty, return `UAC saved: nothing new` and stop.
 2. Work out from `events` (already filtered and redacted) and `diff_stat`:
    - what the session was trying to do

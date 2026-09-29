@@ -2,7 +2,7 @@
   "name": "universal-agent-context",
   "displayName": "Universal Agent Context (UAC)",
   "description": "Local memory for coding agents: recording toggle, continue-from-session picker, session/knowledge trees, messages and dashboard.",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "publisher": "uac-dev",
   "icon": "media/icon.png",
   "engines": {

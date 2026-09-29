@@ -46,7 +46,8 @@ const TOOLS = [
   ['uac_save', 'Compressor only: ONE call with summary {title, body} and checkpoint {goal, working, broken, files, next_steps, note, gaps} (both required; an incomplete card is refused and nothing is deleted), plus candidates (op add|update|supersede|conflict|verify|done|noop). Replaces UAC\'s copy of the raw events.',
     obj({ session_id: str, base_event_id: num, upto_event_id: num, model: { type: 'string', description: 'Your model id' },
       summary: obj({ title: { type: 'string', description: 'verb + object + outcome, with the main path' }, body: str }, ['title', 'body']),
-      checkpoint: obj({ goal: str, working: str, broken: str, files: arr, next_steps: arr, note: { type: 'string', description: "what I'd tell the next dev" }, gaps: { type: 'string', description: 'what you left out or did not verify' } }, ['goal']),
+      checkpoint: obj({ goal: str, working: str, broken: str, files: arr, next_steps: arr, note: { type: 'string', description: "what I'd tell the next dev" }, gaps: { type: 'string', description: 'what you left out or did not verify' },
+        closed: { type: 'array', items: { type: 'number' }, description: 'numbers of the digest\'s open_items this chapter finished (the others carry forward)' } }, ['goal']),
       candidates: { type: 'array', items: obj({ op: { type: 'string', enum: ['add', 'update', 'supersede', 'conflict', 'verify', 'done', 'noop'] }, id: str, ids: arr, type: { type: 'string', enum: S.TYPES },
         title: str, body: str, why: str, files: arr, anchors: anchorsSchema, confidence: num }, ['op']) } }, ['session_id', 'upto_event_id', 'summary', 'checkpoint'])],
 ];
@@ -75,7 +76,8 @@ function getById(id, { raw, p } = {}) {
   const sess = !t ? S.session(S.resolveSessionRef(p.id, id)) : null; // session: #n, short id or id (this project only)
   if (sess) {
     const x = S.listSessions(p.id, { limit: 500, all: true }).find((y) => y.id === sess.id);
-    const out = { session: { ref: S.ref(x || sess), id: sess.id, title: sess.title, agent: sess.agent, branch: sess.branch, status: sess.status, started_at: sess.started_at, unsaved: x?.unsaved }, card: S.card(sess.id) };
+    const out = { session: { ref: S.ref(x || sess), id: sess.id, title: sess.title, agent: sess.agent, branch: sess.branch, status: sess.status, started_at: sess.started_at, unsaved: x?.unsaved }, card: S.card(sess.id),
+      chapters: S.chapters(sess.id).map(({ id, no, title, from_ts, at, events_n, files, pre }) => ({ id, no, title, from_ts, at, events_n, files, pre })) };
     if (raw) {
       let rows;
       try { rows = rawLog(sess); out.raw_source = 'host transcript'; }
@@ -100,6 +102,12 @@ function getById(id, { raw, p } = {}) {
   // every row is scoped to this project (user-scope memories have no project and are shared on purpose)
   const row = t === 'memories' ? S.memory(id) : S.open().prepare(`SELECT * FROM ${t} WHERE id = ?`).get(id);
   if (!row || (row.project_id != null && row.project_id !== p.id)) return { id, error: 'not found in this project' };
+  if (t === 'summaries') { // a chapter: its summary + the checkpoint written with it
+    const ch = S.chapters(row.session_id).find((c) => c.id === id);
+    const cp = ch?.checkpoint_id && S.open().prepare('SELECT goal, working, broken, files, next_steps, note, gaps, ts FROM checkpoints WHERE id = ?').get(ch.checkpoint_id);
+    return { chapter: { id, no: ch?.no, title: row.title, body: row.body, from_ts: row.from_ts, at: row.created_at, events_n: row.events_n, model: row.model, pre: ch?.pre },
+      checkpoint: cp ? { ...cp, files: JSON.parse(cp.files || '[]'), next_steps: JSON.parse(cp.next_steps || '[]') } : null };
+  }
   return t === 'memories' ? { ...row, relations: S.open().prepare('SELECT * FROM memory_relations WHERE a = ? OR b = ?').all(id, id) } : row;
 }
 
