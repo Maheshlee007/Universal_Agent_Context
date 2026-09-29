@@ -63,7 +63,7 @@ function fmtCard(c, meta, { commits, sessionId } = {}) {
   if (c.gaps) L.push(`Not in this card (verify in code before relying on it): ${clip(c.gaps, 300)}`);
   if (commits?.length) L.push(`Commits since this card: ${commits.slice(0, 5).join(' · ')}`);
   if (earlier.length) {
-    L.push(`Earlier chapters (titles only: if your task touches their files, uac_get {ids:["s-…"]} first):`);
+    L.push(`Earlier chapters (titles only: for questions about earlier work, or if your task touches their files, uac_get {ids:["s-…"]} first):`);
     for (const e of earlier.slice(-5)) L.push(`- ${e.id} · ${span(e)} · "${clip(e.title, 90)}"${e.files.length ? ` · files: ${e.files.slice(0, 4).join(', ')}` : ''}${e.pre ? ' · pre-chapter card, overlaps later ones' : ''}`);
     if (earlier.length > 5) L.push(`- +${earlier.length - 5} earlier: uac_get {ids:["${S.shortId(sessionId)}"]} lists all chapters`);
   }

@@ -653,3 +653,15 @@ test('fe/ + be/ in one folder: area chosen by the LLM, package messages, sibling
   K.save(S.session(sid), p, { base_event_id: d.base_event_id, upto_event_id: d.upto_event_id, summary: { title: 'c2', body: 'b' }, checkpoint: { goal: 'g', next_steps: ['Write test for /api/health endpoint (Backend)'], note: 'n' } });
   assert.deepEqual(S.card(sid).next_steps, ['Write test for GET /api/health endpoint (open since ch1)']);
 });
+
+test('proposal cap is per chapter, not per session lifetime (long sessions keep recording knowledge)', () => {
+  const sid = 'sess-cap';
+  const s0 = S.ensureSession({ host: 'claude', session_id: sid, cwd: repo }).s, p = S.projectFor(repo);
+  for (let i = 0; i < 20; i++) S.propose({ type: 'fact', title: `cap fact ${i} zq${i}x`, body: `distinct body ${i} kw${i * 7}`, confidence: 0.9 }, { s: S.session(sid), p });
+  assert.throws(() => S.propose({ type: 'fact', title: 'one more', body: 'b', confidence: 0.9 }, { s: S.session(sid), p }), /per chapter/);
+  S.addEvent(S.session(sid), 'prompt', { body: 'x' });
+  const d = K.digest(S.session(sid));
+  K.save(S.session(sid), p, { base_event_id: d.base_event_id, upto_event_id: d.upto_event_id, summary: { title: 'c', body: 'b' }, checkpoint: { goal: 'g', note: 'n' } });
+  assert.ok(S.propose({ type: 'fact', title: 'after the save', body: 'new chapter, new budget', confidence: 0.9 }, { s: S.session(sid), p }).id);
+  void s0;
+});

@@ -9,7 +9,9 @@ import { gitInfo, git, gitRaw, defaultBranch, redact, clip, ignored } from './ut
 export const TYPES = ['fact', 'decision', 'constraint', 'lesson', 'requirement', 'preference', 'warning', 'idea', 'task', 'architecture'];
 export const MODES = ['off', 'manual', 'automatic'];
 export const AUTO_ACCEPT_CONFIDENCE = 0.7;
-const MAX_PROPOSALS_PER_SESSION = 20;
+// runaway guard: at most this many LLM memories per chapter (since the session's last save), not per session lifetime,
+// or a long multi-day session silently stops recording knowledge
+const MAX_PROPOSALS_PER_CHAPTER = 20;
 const PROPOSAL_TTL_DAYS = 7;
 const DECAY_EXEMPT = new Set(['decision', 'lesson', 'constraint', 'requirement']);
 
@@ -457,8 +459,9 @@ export function propose(input, { s, p, via = 'llm', model }) {
   if (input.type && !TYPES.includes(input.type)) throw new Error(`unknown type "${input.type}"; use one of ${TYPES.join(', ')}`);
   const type = input.type || 'fact';
   if (s && via === 'llm') {
-    const n = get(`SELECT COUNT(*) AS n FROM memories WHERE source_session = ? AND source = 'llm'`, s.id).n;
-    if (n >= MAX_PROPOSALS_PER_SESSION) throw new Error(`proposal limit (${MAX_PROPOSALS_PER_SESSION}) reached for this session`);
+    const since = get(`SELECT MAX(created_at) AS t FROM summaries WHERE session_id = ? AND quality = 'llm'`, s.id)?.t || '';
+    const n = get(`SELECT COUNT(*) AS n FROM memories WHERE source_session = ? AND source = 'llm' AND created_at >= ?`, s.id, since).n;
+    if (n >= MAX_PROPOSALS_PER_CHAPTER) throw new Error(`proposal limit (${MAX_PROPOSALS_PER_CHAPTER} per chapter) reached; the next save starts a new chapter`);
   }
   // an explicit scope wins ("in this repo use tabs" is a project preference); defaults: preference → user (all your
   // projects), work on a feature branch → branch, else project
