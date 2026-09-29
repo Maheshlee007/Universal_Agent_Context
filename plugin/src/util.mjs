@@ -1,7 +1,31 @@
-// Redaction, ignore globs, git helpers.
+// Redaction, ignore globs, git helpers, own version.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// This process's own UAC version and plugin root: the plugin.json next to this code (dev tree, Claude plugin cache
+// or the VS Code extension's bundle). Hooks and the MCP server can come from different roots; comparing tells us.
+export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+export const VERSION = (() => {
+  for (const f of ['.claude-plugin/plugin.json', 'package.json', '../package.json'])
+    try { const v = JSON.parse(fs.readFileSync(path.join(ROOT, f), 'utf8')).version; if (v) return v; } catch {}
+  return '0.0.0';
+})();
+export const semverCmp = (a, b) => {
+  const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0);
+  return 0;
+};
+// The version Claude Code has installed for this plugin (what the NEXT session / a /reload-plugins will run).
+export function claudeInstalled() {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(process.env.UAC_TEST_HOME || os.homedir(), '.claude', 'plugins', 'installed_plugins.json'), 'utf8'));
+    const e = (j.plugins?.['universal-agent-context@uac'] || []).find((x) => x.scope === 'user') || j.plugins?.['universal-agent-context@uac']?.[0];
+    return e ? { version: e.version, path: e.installPath } : null;
+  } catch { return null; }
+}
 
 const SECRETS = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,

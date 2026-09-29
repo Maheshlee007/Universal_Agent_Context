@@ -64,6 +64,8 @@ pre,.mbody{white-space:pre-wrap;word-break:break-word;margin:4px 0;font:12px/1.4
 ul{margin:4px 0;padding-left:18px}
 td.ev div{max-height:7em;overflow:auto;white-space:pre-wrap;word-break:break-word;font:12px/1.4 ui-monospace,Consolas,monospace}
 details>summary{cursor:pointer;color:var(--mut);margin-top:6px}
+.msglist{max-height:65vh;overflow-y:auto;padding-right:4px}
+.card.msg .banner button{padding:0 6px}
 details.acc{border:1px solid var(--bd);border-radius:6px;background:var(--card);margin-bottom:6px}
 details.acc>summary{margin:0;padding:7px 10px;color:var(--fg);display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 details.acc>summary b{text-transform:capitalize}
@@ -83,6 +85,7 @@ label.mode .meta{display:block;margin-left:22px}
   <b>UAC</b>
   <select id="proj" title="Project"></select>
   <nav id="tabs"></nav>
+  <button id="refresh" title="Reload everything from the UAC store (new sessions, messages, knowledge)" style="margin-left:auto">⟳ Refresh</button>
 </header>
 <main id="main"></main>
 <div id="toast" title="Click to dismiss"></div>
@@ -270,7 +273,6 @@ const VIEWS = {
       if (!force && s2 === sig) return;
       sig = s2; ss = list;
       // number visible (non-rolled-up) sessions only, matching `#uac continue <n>` even when all=1
-      let k = 0; ss.forEach(s => { s.n = s.rolled_into || s.phantom ? null : ++k; });
       for (const id of picked) if (!byId(id) || byId(id).rolled_into) picked.delete(id);
       const nextIds = Array.isArray(nx.sessions) ? nx.sessions : ss.filter(s => s.next).map(s => s.id);
       const chosen = nextIds.map(id => ss.find(s => s.id === id) || { id, n: '?', title: id });
@@ -300,11 +302,7 @@ const VIEWS = {
   },
 
   async knowledge(out, live) {
-    const [rv, auto, ms] = await Promise.all([
-      api(P('/api/review')),
-      api(P('/api/memories', { auto: '1' })).catch(() => []),
-      api(P('/api/memories', { q: kf.q })),
-    ]);
+    const [rv, ms] = await Promise.all([api(P('/api/review')), api(P('/api/memories', { q: kf.q }))]);
     if (!live()) return;
     updateBadge(rv);
     const reload = () => render();
@@ -328,16 +326,7 @@ const VIEWS = {
       conflicts.map(({ memory, other }) => h('div', { class: 'split' },
         reviewCard(memory, 'New (conflicts with the existing memory)', reload), other ? memCard(other, 'Existing') : empty('(other side missing)')))]));
 
-    // 2. recently auto-accepted
-    out.append(acc('auto', `Recently auto-accepted (${auto.length})`, null, !auto.length ? empty('Nothing accepted automatically in the last 7 days.') : h('div', { class: 'card' }, auto.map(m => h('div', { class: 'mem' },
-      h('div', null, h('b', null, m.title || '(untitled)'), pill(m.type), m.source_model ? pill('by ' + m.source_model) : null),
-      h('div', { class: 'mbody' }, str(m.body)),
-      h('div', { class: 'meta' }, 'accepted by ', m.resolved_by || '?', m.resolved_at ? ' · ' + ago(m.resolved_at) : ''),
-      h('div', { class: 'row' },
-        h('button', { title: 'Archive it: it stops being loaded', onclick: act(async () => { await api(`/api/memories/${enc(m.id)}`, 'PUT', { status: 'archived' }); reload(); }) }, 'Undo'),
-        twoStep('Wrong', 'Confirm: mark as wrong', async () => { await api(`/api/memories/${enc(m.id)}`, 'PUT', { status: 'superseded' }); reload(); })))))));
-
-    // 3. project knowledge, grouped by type
+    // 2. project knowledge, grouped by type (items accepted automatically in the last 7 days carry a "new" pill; edit/invalidate them in place)
     let t;
     const q = h('input', { type: 'text', placeholder: 'Search knowledge…', value: kf.q, oninput: (e) => { clearTimeout(t); t = setTimeout(() => { kf.q = e.target.value; render(); }, 300); } });
     const allBox = h('label', { class: 'meta' }, h('input', { type: 'checkbox', checked: kf.all, onchange: (e) => { kf.all = e.target.checked; render(); } }), ' show invalidated / archived');
@@ -369,20 +358,28 @@ const VIEWS = {
     if (!live()) return;
     const branches = [...new Set(ss.map(s => s.branch).filter(Boolean))].sort();
     const to = sel('all', [['all', 'Everyone'], ...branches.map(b => ['branch:' + b, 'Branch ' + b]),
-      ...ss.slice(0, 30).map((s, i) => ['session:' + s.id, `Session #${s.n ?? i + 1} ${sTitle(s)}`])]);
+      ...ss.slice(0, 30).map((s) => ['session:' + s.id, `Session #${s.n ?? '-'} ${s.short || s.id.slice(0, 8)} ${sTitle(s)}`])]);
     const ta = h('textarea', { rows: 3, placeholder: 'Note for other agents. It is shown once to each matching session on its next prompt.' });
     out.append(h('div', { class: 'card' }, h('h3', null, 'New message'), ta,
       h('div', { class: 'row' }, h('span', { class: 'meta' }, 'To'), to, h('button', { class: 'pri', onclick: act(async () => {
         if (!ta.value.trim()) return toast('Type a message first');
         await api(P('/api/messages'), 'POST', { text: ta.value.trim(), to: to.value }); toast('Sent', true); render();
       }) }, 'Send'))));
-    const sorted = [...msgs].sort((a, b) => toDate(b.created_at) - toDate(a.created_at));
-    out.append(h('h2', null, `Messages (${sorted.length})`));
-    if (!sorted.length) out.append(empty('No messages yet.'));
-    sorted.forEach(m => out.append(h('div', { class: 'card' },
-      h('div', { class: 'meta' }, h('b', null, [m.from_agent || 'dashboard', m.from_branch && '@' + m.from_branch].filter(Boolean).join(' ')), ' → ', str(m.to || 'all'),
-        ' · ', ago(m.created_at), m.reads != null ? ` · read by ${Array.isArray(m.reads) ? m.reads.length : m.reads}` : ''),
-      h('pre', null, str(m.text)))));
+    // the list refreshes by itself (poll) without touching the composer, so a half-typed message survives
+    const head = h('h2'), list = h('div', { class: 'msglist' });
+    out.append(head, list);
+    const draw = (rows) => {
+      const sorted = [...rows].sort((a, b) => toDate(b.created_at) - toDate(a.created_at));
+      head.textContent = `Messages (${sorted.length})`;
+      list.replaceChildren(...(sorted.length ? sorted.map(m => h('div', { class: 'card msg' },
+        h('div', { class: 'meta banner' }, h('b', null, [m.from_agent || 'dashboard', m.from_branch && '@' + m.from_branch].filter(Boolean).join(' ')), ' → ', str(m.recipient || m.to || 'all'),
+          ' · ', ago(m.created_at), m.reads != null ? ` · read by ${Array.isArray(m.reads) ? m.reads.length : m.reads}` : '',
+          h('span', { style: 'flex:1' }),
+          twoStep('🗑', 'Delete?', async () => { await api(`/api/messages/${enc(m.id)}`, 'DELETE'); draw(await api(P('/api/messages'))); })),
+        h('pre', null, str(m.text)))) : [empty('No messages yet.')]));
+    };
+    draw(msgs);
+    pollFn = () => api(P('/api/messages')).then(r => { if (list.isConnected) draw(r); }).catch(() => {});
   },
 
   async project(out, live) {
@@ -428,9 +425,6 @@ const VIEWS = {
           h('td', null, others.length ? h('div', { class: 'row', style: 'margin:0' }, target, merge) : null, h('div', { class: 'row' }, del)));
       })));
 
-    const adv = h('div');
-    out.append(h('details', { ontoggle: (e) => { if (e.target.open && !adv.childNodes.length) advanced(adv).catch(err => adv.replaceChildren(empty(err.message))); } },
-      h('summary', null, 'Advanced (read-only): packs, retrievals, summaries, checkpoints'), adv));
   },
 };
 
@@ -484,18 +478,20 @@ function sessionCard(s, nextIds, reload, { onPick, byId }) {
   const card = h('div', { class: 'card' + (isNext ? ' nextc' : '') + (emp || rolled ? ' dim' : '') + (rolled ? ' rolled' : '') + (s.id === focusSess ? ' focus' : ''), id: 's-' + s.id },
     h('div', { class: 'sh', onclick: toggle },
       pickIn,
-      h('span', { class: 'n' }, openCards.has(s.id) ? '▾' : '▸', s.n != null ? ' #' + s.n : ''),
+      h('span', { class: 'n', title: 'Stable number and short id: both work in #uac continue, uac_get, uac_bootstrap' }, openCards.has(s.id) ? '▾' : '▸', s.n != null ? ' #' + s.n : '', ' ', h('span', { class: 'mono' }, s.short || s.id.slice(0, 8))),
       titleEl,
       h('button', { title: 'Rename', onclick: rename }, '✎'),
       rolled ? null : h('label', { class: 'nexttog', title: 'Load this session card into the next session (pick one or several)', onclick: (e) => e.stopPropagation() }, nextIn, 'Continue from this in next session')),
     h('div', { class: 'row', style: 'margin-top:2px' },
       h('span', { class: 'meta' }, [s.agent, s.model, s.branch && '⎇ ' + s.branch, ago(s.ended_at || s.started_at)].filter(Boolean).join(' · ')),
       cap,
+      s.live ? pill('live', 'ok', 'Active in a window right now') : null,
+      s.raw === false ? pill('no raw log', '', 'The host deleted its transcript: only the card and kept turns remain') : null,
+      s.unsaved >= 3 ? pill(s.unsaved + ' unsaved', 'warn', 'Recorded events not in a card yet') : null,
       rolled ? h('a', { class: 'pill acc', href: '#sessions/' + enc(rolled), onclick: (e) => e.stopPropagation() }, 'rolled into ' + (into?.n != null ? '#' + into.n : rolled)) : null,
       emp ? pill('empty · can delete', 'warn', 'No events, no card, no memories') : null,
       s.card?.quality === 'auto' ? pill('auto card', 'warn', 'Built without an LLM because the session ended unsaved. Save it to refine.') : null,
       !s.card && !emp ? pill('no card') : null,
-      Number(s.unsaved) > 0 ? pill(`unsaved ${s.unsaved}`, 'acc') : null,
       Number(s.memories_created) > 0 ? pill(`${s.memories_created} memories`) : null,
       h('span', { style: 'flex:1' }), del),
     body);
@@ -540,7 +536,8 @@ function memRow(m, reload) {
   const put = (b) => act(async () => { m = { ...m, ...(await api(`/api/memories/${enc(m.id)}`, 'PUT', b)) }; draw(); });
   const draw = () => fill(row, 
     h('div', null, m.pinned ? '★ ' : '', h('b', null, m.title || '(untitled)'), ' ', st(m.status), fresh(m.freshness),
-      m.muted ? pill('🔇 muted', 'warn', 'Never loaded') : null, m.source_model ? pill('by ' + m.source_model) : null),
+      m.muted ? pill('🔇 muted', 'warn', 'Never loaded') : null, m.source_model ? pill('by ' + m.source_model) : null,
+      /^(auto-policy|compressor)$/.test(m.resolved_by || '') && Date.now() - toDate(m.resolved_at) < 7 * 864e5 ? pill('new', 'acc', 'Accepted automatically ' + ago(m.resolved_at) + ' by ' + m.resolved_by + '. Edit or invalidate it here if it is wrong.') : null),
     h('div', { class: 'mbody' }, str(m.body)),
     anchors(m.anchors),
     h('div', { class: 'row' },
@@ -603,27 +600,9 @@ function reviewCard(m, label, reload) {
   return card;
 }
 
-// ---------- advanced (read-only plumbing) ----------
-async function advanced(box) {
-  const [packs, rets, sums, cps] = await Promise.all(['packs', 'retrievals', 'summaries', 'checkpoints'].map(k => api(P('/api/' + k)).catch(e => ({ err: e.message }))));
-  const sec = (label, items, fn) => h('details', null, h('summary', null, `${label} (${items.err ? 'error' : items.length})`),
-    items.err ? empty(items.err) : items.length ? items.map(fn) : empty('None.'));
-  fill(box, 
-    sec('Packs', packs, p => h('div', { class: 'card' }, h('h3', null, p.name || p.id, p.next ? pill('next session', 'ok') : null),
-      h('div', { class: 'meta' }, [p.id, arr(p.item_ids ?? p.items).length + ' items', p.budget_tokens && p.budget_tokens + ' token budget', fmt(p.created_at)].filter(Boolean).join(' · ')), text('Goal', p.goal))),
-    sec('Retrievals', rets, r => h('div', { class: 'card' }, h('h3', null, r.goal || '(no goal)'),
-      h('div', { class: 'meta' }, [r.session_id, r.tokens != null && r.tokens + ' tokens', fmt(r.ts)].filter(Boolean).join(' · ')),
-      h('div', { class: 'mono meta' }, arr(r.item_ids).map(str).join('  ')))),
-    sec('Summaries', sums, s => h('div', { class: 'card' }, h('h3', null, s.title || '(untitled)'),
-      h('div', { class: 'meta' }, [s.id, s.level, s.quality, s.session_id, fmt(s.created_at ?? s.ts)].filter(Boolean).join(' · ')), h('pre', null, str(s.body)))),
-    sec('Checkpoints', cps, c => h('div', { class: 'card' }, h('h3', null, c.goal || '(no goal)'),
-      h('div', { class: 'meta' }, [c.id, c.trigger, c.session_id, fmt(c.ts)].filter(Boolean).join(' · ')),
-      text('Working', c.state_working ?? c.working), text('Broken', c.state_broken ?? c.broken), list('Files', c.files), list('Next steps', c.next_steps),
-      text('Note for next dev', c.note_for_next_dev ?? c.note))));
-}
-
 // ---------- boot ----------
-setInterval(() => { if (tab === 'sessions' && !document.hidden && project && pollFn) pollFn(); }, 5000);
+setInterval(() => { if (!document.hidden && project && pollFn) pollFn(); }, 5000); // sessions + messages tabs keep themselves current
+document.getElementById('refresh').onclick = act(async () => { await loadProjects(); updateBadge(); await render(); toast('Refreshed', true); });
 (async () => {
   drawTabs();
   if (!TOKEN) toast('No token in URL (?t=…). Open the link printed by `uac view`.');

@@ -1,6 +1,7 @@
 // Domain operations over the SQLite store (v0.3: session-centric, remote-keyed projects, anchored memories).
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { all, get, run, tx, uid, now, J, P, hasFts, open } from './db.mjs';
 import { gitInfo, git, gitRaw, defaultBranch, redact, clip, ignored } from './util.mjs';
@@ -13,20 +14,32 @@ const PROPOSAL_TTL_DAYS = 7;
 const DECAY_EXEMPT = new Set(['decision', 'lesson', 'constraint', 'requirement']);
 
 // ---------- projects ----------
-// Claude scratchpads / temp dirs are never registered as projects.
-export const isScratch = (dir) => /[\\/](Temp|tmp)[\\/]claude[\\/-]/i.test(dir || '');
+// Claude scratchpads / temp dirs are never registered as projects (UAC_ALLOW_SCRATCH=1 for test harnesses).
+export const isScratch = (dir) => !process.env.UAC_ALLOW_SCRATCH && /[\\/](Temp|tmp)[\\/]claude[\\/-]/i.test(dir || '');
 
 export function normRemote(url) {
   if (!url) return null;
   return url.trim().replace(/\.git$/, '').replace(/^[a-z+]+:\/\//i, '').replace(/^[^@/]+@/, '').replace(':', '/').toLowerCase();
 }
 
-// Identity = git remote when there is one (same repo cloned twice = one project), else the folder.
-export function projectFor(cwd) {
+// Identity = git remote when there is one (same repo cloned twice = one project), else the git root, else the folder.
+// A non-git subfolder of a registered folder belongs to it. create:false (read-only CLI) never registers a project:
+// it returns a transient { id: null } so nothing is written for a folder no agent session ever ran in.
+export function projectFor(cwd, { create = true } = {}) {
   const g = gitInfo(cwd || process.cwd());
   const remote = normRemote(g.remote);
   let row = remote && all('SELECT * FROM projects WHERE git_remote IS NOT NULL').find((r) => normRemote(r.git_remote) === remote);
   if (!row) row = get('SELECT * FROM projects WHERE lower(root) = lower(?)', g.root);
+  if (!row && !g.commit && !g.branch) {
+    const norm = (d) => path.resolve(d).replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+    const here = norm(g.root);
+    // never the home folder or a drive root: an agent once run there would swallow every folder below it
+    const tooBroad = (r) => norm(r) === norm(os.homedir()) || /^[a-z]:$|^$/.test(norm(r));
+    row = all('SELECT * FROM projects').filter((r) => r.root && !tooBroad(r.root) && here.startsWith(norm(r.root) + '/'))
+      .sort((a, b) => b.root.length - a.root.length)[0];
+    if (row) return { ...row, branch: null, commit: null };
+  }
+  if (!row && !create) return { id: null, root: g.root, name: path.basename(g.root), mode: null, branch: g.branch, commit: g.commit, transient: true };
   if (row) {
     if (row.root !== g.root || (g.remote && row.git_remote !== g.remote))
       run('UPDATE projects SET root = ?, git_remote = COALESCE(?, git_remote) WHERE id = ?', g.root, g.remote, row.id);
@@ -53,6 +66,7 @@ export function listProjects() {
 export function mergeProjects(from, into) {
   if (from === into || !project(from) || !project(into)) throw new Error('bad project ids');
   tx(() => {
+    run('UPDATE sessions SET seq = NULL WHERE project_id = ?', from); // renumbered after the target's own sessions
     for (const t of PROJECT_TABLES) run(`UPDATE ${t} SET project_id = ? WHERE project_id = ?`, into, from);
     run('DELETE FROM settings WHERE scope = ?', from);
     run('DELETE FROM projects WHERE id = ?', from);
@@ -111,12 +125,14 @@ export function addEvent(s, kind, { tool, target, body, agent_id } = {}) {
     s.id, now(), kind, tool ?? null, clip(redact(target), 300), clip(redact(body), 2000), agent_id ?? null);
 }
 
+// Other sessions of this project with ≥3 unsaved events (live in another window, ended, or abandoned without SessionEnd).
 export function unsavedSessions(projectId, exceptId) {
-  return all(`SELECT s.id AS session_id, s.agent, s.started_at, s.status, COUNT(e.id) AS events FROM sessions s
+  return all(`SELECT s.id AS session_id, s.agent, s.started_at, s.status, s.quality, COUNT(e.id) AS events, MAX(e.ts) AS last_ts FROM sessions s
     JOIN events e ON e.session_id = s.id AND e.id > s.saved_event_id AND e.kind != 'pending'
-    WHERE s.project_id = ? AND s.id != ? AND COALESCE(s.quality, '') != 'llm' GROUP BY s.id HAVING events >= 3 ORDER BY s.started_at DESC LIMIT 3`,
+    WHERE s.project_id = ? AND s.id != ? AND s.rolled_into IS NULL GROUP BY s.id HAVING events >= 3 ORDER BY last_ts DESC LIMIT 5`,
     projectId, exceptId ?? '');
 }
+export const IDLE_MS = 30 * 60e3; // no event for this long = treated like an ended session (SessionEnd never came)
 export const unsavedCount = (s) => get(`SELECT COUNT(*) AS n FROM events WHERE session_id = ? AND id > ? AND kind != 'pending'`, s.id, s.saved_event_id).n;
 
 // Card = latest summary + latest non-superseded checkpoint of a session. A precompact snapshot (deterministic, no LLM)
@@ -157,30 +173,59 @@ export function purgePhantoms(projectId, exceptId) {
   return ids.length;
 }
 
-// Numbered newest-first list, the same numbering in CLI, dashboard, extension and `#uac continue <n>`.
-// Rolled-up sessions are hidden (and unnumbered) unless `all`.
+// Stable numbers: a session gets #n (sessions.seq, per project, 1, 2, 3…) once it stops being a phantom, and keeps it
+// forever. Assigned lazily in start order, so the numbering is the same in the header, tools, CLI, dashboard, extension.
+function assignSeq(projectId) {
+  if (!projectId) return;
+  const todo = all(`SELECT s.id FROM sessions s WHERE s.project_id = ? AND s.seq IS NULL AND NOT ${PHANTOM} ORDER BY s.started_at, s.rowid`, projectId);
+  if (!todo.length) return;
+  let n = get('SELECT COALESCE(MAX(seq), 0) AS m FROM sessions WHERE project_id = ?', projectId).m;
+  for (const { id } of todo) run('UPDATE sessions SET seq = ? WHERE id = ?', ++n, id);
+}
+const hasRaw = (p) => { try { return !!p && fs.existsSync(p); } catch { return false; } };
+
+// Newest-first list; #n = the stable seq. Rolled-up and phantom sessions are hidden unless `all`.
 export function listSessions(projectId, { limit = 50, active, all: withRolled } = {}) {
+  if (!projectId) return [];
+  assignSeq(projectId);
   const next = new Set(nextSessions(projectId));
-  let visible = 0;
   return all(`SELECT s.*, (SELECT COUNT(*) FROM events e WHERE e.session_id = s.id AND e.kind != 'pending') AS events,
       (SELECT COUNT(*) FROM events e WHERE e.session_id = s.id AND e.id > s.saved_event_id AND e.kind != 'pending') AS unsaved,
+      (SELECT MAX(ts) FROM events e WHERE e.session_id = s.id) AS last_event,
       (SELECT COUNT(*) FROM memories m WHERE m.source_session = s.id) AS memories_created
     FROM sessions s WHERE s.project_id = ? ${active ? "AND s.status != 'ended'" : ''} ${withRolled ? '' : `AND s.rolled_into IS NULL AND NOT ${PHANTOM}`}
     ORDER BY s.started_at DESC, s.rowid DESC LIMIT ?`, projectId, limit)
     .map((s) => {
       const c = card(s.id);
       const phantom = withRolled && isPhantom(s.id);
-      // rolled-up and phantom sessions get no number, so #n is the same with or without --all
-      return { id: s.id, n: s.rolled_into || phantom ? null : ++visible, phantom, agent: s.agent, model: s.model, branch: s.branch, capture: s.capture, status: s.status,
+      const last = [s.last_active_at, s.last_event, s.started_at].filter(Boolean).sort().at(-1);
+      return { id: s.id, short: shortId(s.id), n: phantom ? null : s.seq ?? null, phantom, agent: s.agent, model: s.model, branch: s.branch, capture: s.capture, status: s.status,
+        live: s.status !== 'ended' && Date.now() - Date.parse(last) < IDLE_MS, last_active: last,
         started_at: s.started_at, ended_at: s.ended_at, title: s.title || c?.title || null, events: s.events, unsaved: s.unsaved,
         memories_created: s.memories_created, card: c, next: next.has(s.id), rolled_into: s.rolled_into ?? null,
-        empty: !s.events && !c && !s.memories_created };
+        raw: hasRaw(s.transcript_path), empty: !s.events && !c && !s.memories_created };
     });
 }
-// Accepts ids or 1-based numbers from listSessions (numbers count visible, non-rolled-up sessions).
-export function resolveSessionRefs(projectId, refs) {
-  const list = all(`SELECT id FROM sessions s WHERE project_id = ? AND rolled_into IS NULL AND NOT ${PHANTOM} ORDER BY started_at DESC, rowid DESC LIMIT 200`, projectId).map((r) => r.id);
-  return refs.map((r) => (/^\d+$/.test(String(r)) && !session(String(r)) ? list[Number(r) - 1] : String(r))).filter((id) => id && session(id));
+// One resolver for every surface (hook controls, MCP, CLI, dashboard): full id, short id (≥6 chars, printed next to every
+// #n), or #n / n (the stable seq). Only sessions of this project resolve.
+export function resolveSessionRef(projectId, ref) {
+  const r = String(ref ?? '').trim().replace(/^#/, '');
+  if (!r || !projectId) return null;
+  if (get('SELECT id FROM sessions WHERE id = ? AND project_id = ?', r, projectId)) return r;
+  if (/^\d{1,5}$/.test(r)) { assignSeq(projectId); return get('SELECT id FROM sessions WHERE project_id = ? AND seq = ?', projectId, Number(r))?.id ?? null; }
+  if (r.length >= 6) {
+    const m = all(`SELECT id FROM sessions WHERE project_id = ? AND id LIKE ? ESCAPE '\\' LIMIT 2`, projectId, r.replace(/[%_\\]/g, '\\$&') + '%');
+    if (m.length === 1) return m[0].id;
+  }
+  return null;
+}
+export const resolveSessionRefs = (projectId, refs) => refs.map((r) => resolveSessionRef(projectId, r)).filter(Boolean);
+export const shortId = (id) => String(id || '').slice(0, 8);
+export const ref = (x) => `#${x.seq ?? x.n ?? '?'} ${shortId(x.id)}`; // how a session is named everywhere
+// "unknown session" errors say why and list what would work, so the retry is one call
+export function sessionRefError(projectId, r) {
+  const list = listSessions(projectId, { limit: 8 });
+  return `no session "${r}" in this project. Use its #n, short id or full id: ${list.map((x) => `${ref(x)} "${clip(x.title || x.card?.title || x.agent, 40)}"`).join(' · ') || '(no sessions yet)'}`;
 }
 
 export function sessionDetail(id) {
@@ -250,27 +295,34 @@ export function setNextSessions(projectId, ids) {
   else run(`DELETE FROM settings WHERE scope = ? AND key = 'next_sessions'`, projectId);
   return ids || [];
 }
-// Legacy one-shot pack (v0.2), still honoured.
-export const nextPack = (projectId) => get(`SELECT value FROM settings WHERE scope = ? AND key = 'next_pack'`, projectId)?.value ?? null;
-export function setNextPack(projectId, packId) {
-  if (packId) run(`INSERT OR REPLACE INTO settings VALUES (?, 'next_pack', ?)`, projectId, packId);
-  else run(`DELETE FROM settings WHERE scope = ? AND key = 'next_pack'`, projectId);
-  return packId || null;
-}
 
 // ---------- cross-agent messages ----------
 export function postMessage(s, p, text, to = 'all') {
   if (!text?.trim()) throw new Error('empty message');
   if (!/^(all|branch:.+|session:.+)$/.test(to)) throw new Error("to must be 'all', 'branch:<name>' or 'session:<id>'");
+  if (to.startsWith('session:')) { // #n / short id → the full id the recipient is matched on
+    const sid = resolveSessionRef(p.id, to.slice(8));
+    if (!sid) throw new Error(sessionRefError(p.id, to.slice(8)));
+    to = `session:${sid}`;
+  }
   const id = uid('msg');
   run('INSERT INTO messages VALUES (?,?,?,?,?,?,?,?)', id, p.id, s?.id ?? null, s?.agent ?? 'user', s?.branch ?? p.branch ?? null, to, clip(redact(text), 2000), now());
   return get('SELECT * FROM messages WHERE id = ?', id);
 }
+// Who gets a message once: the sessions that were open when it was posted (parallel windows), and, if nobody has read it
+// yet, the next session that starts. Later sessions don't see it again (a note to "main" is not a banner forever).
+// A message to one session always reaches that session.
 export function unreadMessages(s) {
   return all(`SELECT * FROM messages m WHERE m.project_id = ? AND COALESCE(m.from_session, '') != ?
       AND (m.recipient = 'all' OR m.recipient = ? OR m.recipient = ?) AND m.created_at >= ?
+      AND (m.recipient = ? OR ? <= m.created_at OR NOT EXISTS (SELECT 1 FROM message_reads r2 WHERE r2.message_id = m.id))
       AND NOT EXISTS (SELECT 1 FROM message_reads r WHERE r.message_id = m.id AND r.session_id = ?) ORDER BY m.created_at`,
-    s.project_id, s.id, `branch:${s.branch}`, `session:${s.id}`, new Date(Date.now() - 14 * 864e5).toISOString(), s.id);
+    s.project_id, s.id, `branch:${s.branch}`, `session:${s.id}`, new Date(Date.now() - 14 * 864e5).toISOString(),
+    `session:${s.id}`, s.started_at, s.id);
+}
+export function deleteMessage(id) {
+  run('DELETE FROM message_reads WHERE message_id = ?', id);
+  return run('DELETE FROM messages WHERE id = ?', id).changes > 0;
 }
 export const markRead = (s, msgs) => msgs.forEach((m) => run('INSERT OR IGNORE INTO message_reads VALUES (?,?)', m.id, s.id));
 export const listMessages = (projectId) => all(`SELECT m.*, (SELECT COUNT(*) FROM message_reads r WHERE r.message_id = m.id) AS reads
@@ -287,6 +339,30 @@ export function hydrate(m) {
   return m;
 }
 export const memory = (id) => hydrate(get('SELECT * FROM memories WHERE id = ?', id));
+// Tools act only on this project's memories (user-scope rows, project_id NULL, are shared on purpose).
+export function ownMemory(id, projectId) {
+  const m = memory(id);
+  if (!m || (m.project_id != null && m.project_id !== projectId)) throw new Error(`no memory ${id} in this project (uac_search lists this project's ids)`);
+  return m;
+}
+// Word-set overlap of title + body: the one similarity used for write-time dedup and the save-time duplicates list.
+export const words = (m) => new Set(`${m.title || ''} ${m.body || ''}`.toLowerCase().match(/[\p{L}\p{N}_]{3,}/gu) || []);
+export function jaccard(a, b) {
+  if (!a.size || !b.size) return 0;
+  let n = 0;
+  for (const x of a) if (b.has(x)) n++;
+  return n / (a.size + b.size - n);
+}
+// An active memory of the same type that already says (almost) the same thing: update it instead of adding another.
+export function nearDuplicate(projectId, { type, title, body }, min = 0.6) {
+  const w = words({ title, body });
+  let best = null, score = 0;
+  for (const m of all(`SELECT id, type, title, body FROM memories WHERE (project_id = ? OR project_id IS NULL) AND status IN ('active','stale','proposed') AND type = ? ORDER BY updated_at DESC LIMIT 300`, projectId, TYPES.includes(type) ? type : 'fact')) {
+    const j = jaccard(w, words(m));
+    if (j > score) { score = j; best = m; }
+  }
+  return score >= min ? { ...best, overlap: Math.round(score * 100) / 100 } : null;
+}
 
 const anchorFiles = (m) => [...new Set([...(m.files || []), ...(m.anchors || []).map((a) => a.file).filter(Boolean)])];
 
@@ -311,8 +387,10 @@ export function propose(input, { s, p, via = 'llm', model }) {
     const n = get(`SELECT COUNT(*) AS n FROM memories WHERE source_session = ? AND source = 'llm'`, s.id).n;
     if (n >= MAX_PROPOSALS_PER_SESSION) throw new Error(`proposal limit (${MAX_PROPOSALS_PER_SESSION}) reached for this session`);
   }
-  const branchScoped = input.scope === 'branch' || (input.scope == null && p.branch && p.branch !== defaultBranch(p.root) && type !== 'preference');
-  const scope = input.scope === 'user' || type === 'preference' ? 'user' : branchScoped ? 'branch' : 'project';
+  // an explicit scope wins ("in this repo use tabs" is a project preference); defaults: preference → user (all your
+  // projects), work on a feature branch → branch, else project
+  const scope = ['user', 'project', 'branch'].includes(input.scope) ? input.scope
+    : type === 'preference' ? 'user' : p.branch && p.branch !== defaultBranch(p.root) ? 'branch' : 'project';
   const confidence = via === 'user' ? 1 : Number(input.confidence ?? 0.7);
   const auto = via === 'user' || confidence >= AUTO_ACCEPT_CONFIDENCE;
   const status = input.status || (auto ? 'active' : 'proposed');
@@ -360,18 +438,43 @@ export function updateMemory(id, patch, { by = 'user', reason = 'edit' } = {}) {
   return memory(id);
 }
 
-// "Still true": bump verification without a new version.
+// "Still true": bump verification without a new version. Refused while an anchored file is missing: a same-named file
+// elsewhere is a different file, and "verified" would hide that the memory points at nothing.
 export function verifyMemory(id, p) {
   const m = memory(id);
   if (!m) throw new Error(`no memory ${id}`);
+  const gone = (m.anchors || []).filter((a) => a.file && !fs.existsSync(path.join(p.root, a.file)));
+  if (gone.length) throw new Error(`${id} NOT verified: ${anchorHints(p.root, gone, { existing: true }).join('; ')}. Fix the anchor if you know where the code moved (uac_update {id, anchors}), else retire it (uac_update {id, status:"superseded", reason}).`);
   const head = git(p.root, 'rev-parse', '--short', 'HEAD') || m.verified_commit;
   run(`UPDATE memories SET last_verified_at = ?, verified_commit = ?, status = CASE WHEN status = 'stale' THEN 'active' ELSE status END WHERE id = ?`, now(), head, id);
   setHashes(id, p.root);
   return memory(id);
 }
 
-// Why an anchor won't resolve, with the likely fix (anchors are relative to the project root, not the file you had open).
-export function anchorHints(root, anchors = []) {
+// Repo files: git ls-files, else a bounded walk (non-git projects), skipping dependency/build/hidden folders.
+// ponytail: 5000-file cap for the walk; only run when an anchor is actually missing
+function projectFiles(root) {
+  const tracked = git(root, 'ls-files').split(/\r?\n/).filter(Boolean);
+  if (tracked.length) return tracked;
+  const out = [], stack = [''];
+  while (stack.length && out.length < 5000) {
+    const d = stack.pop();
+    let ents = [];
+    try { ents = fs.readdirSync(path.join(root, d), { withFileTypes: true }); } catch {}
+    for (const e of ents) {
+      if (e.name.startsWith('.') || /^(node_modules|dist|build|out|coverage|target|vendor)$/.test(e.name)) continue;
+      const r = d ? `${d}/${e.name}` : e.name;
+      if (e.isDirectory()) stack.push(r); else out.push(r);
+    }
+  }
+  return out;
+}
+
+// Why an anchor won't resolve. Two situations need opposite advice:
+// - writing (propose/update): the author typed a wrong path → "did you mean" the file under the project root;
+// - an existing memory whose file is gone: same-named files elsewhere are DIFFERENT files (other copies/scaffolds) and
+//   must not be used to verify or reopen it.
+export function anchorHints(root, anchors = [], { existing = false } = {}) {
   if (!root) return [];
   const out = [];
   let files;
@@ -380,13 +483,17 @@ export function anchorHints(root, anchors = []) {
     const f = String(a.file).replace(/\\/g, '/').replace(/^\.\//, '');
     const abs = path.join(root, f);
     if (fs.existsSync(abs)) {
-      try { if (a.symbol && !fs.readFileSync(abs, 'utf8').includes(a.symbol)) out.push(`anchor symbol \`${a.symbol}\` not found in ${f} (quote it exactly as written in the code)`); } catch {}
+      try { if (a.symbol && !fs.readFileSync(abs, 'utf8').includes(a.symbol)) out.push(`symbol \`${a.symbol}\` is no longer in ${f}${existing ? ' (renamed or removed: check the file, then update or retire the memory)' : ' (quote it exactly as written in the code)'}`); } catch {}
       continue;
     }
-    files ??= git(root, 'ls-files').split(/\r?\n/).filter(Boolean);
+    files ??= projectFiles(root);
+    const base = f.split('/').pop();
     let cand = files.filter((x) => x.endsWith('/' + f));
-    if (!cand.length) cand = files.filter((x) => x.split('/').pop() === f.split('/').pop());
-    out.push(`anchor ${f} not found (paths are relative to the project root ${root.replace(/\\/g, '/')})${cand.length ? `; did you mean ${cand.slice(0, 3).join(' or ')}?` : ''}`);
+    if (!cand.length) cand = files.filter((x) => x.split('/').pop() === base);
+    const list = cand.slice(0, 3).join(', ') + (cand.length > 3 ? ` (+${cand.length - 3})` : '');
+    if (existing) out.push(`anchored file ${f} no longer exists${cand.length ? `; ${cand.length} same-named file(s) elsewhere (${list}) are DIFFERENT files: do not verify or reopen this memory from them` : ''}`);
+    else if (cand.length === 1) out.push(`anchor ${f} not found (paths are relative to the project root ${root.replace(/\\/g, '/')}); did you mean ${cand[0]}?`);
+    else out.push(`anchor ${f} not found (paths are relative to the project root ${root.replace(/\\/g, '/')})${cand.length ? `; ambiguous: ${cand.length} files named ${base} (${list}), give the full path` : ''}`);
   }
   return out;
 }
@@ -434,9 +541,6 @@ export function review(projectId) {
   });
   return { proposed, conflicts };
 }
-export const recentlyAutoAccepted = (projectId) => all(`SELECT * FROM memories WHERE (project_id = ? OR project_id IS NULL)
-    AND resolved_by IN ('auto-policy','compressor') AND resolved_at >= ? ORDER BY resolved_at DESC LIMIT 100`,
-  projectId, new Date(Date.now() - 7 * 864e5).toISOString()).map(hydrate);
 
 export function counts(projectId) {
   const c = { active: 0, proposed: 0, stale: 0, conflict: 0, superseded: 0, archived: 0, tasks: 0 };
@@ -460,11 +564,11 @@ export function freshness(p, mems) {
   }
   for (const m of mems) {
     const files = anchorFiles(m);
-    let state = files.length ? 'verified' : 'unknown', since = 0;
+    let state = files.length ? 'verified' : 'unknown', since = 0, reason = null, changed = [];
     for (const a of m.anchors || []) {
       const f = path.join(p.root, a.file);
-      if (!fs.existsSync(f)) { state = 'missing'; break; }
-      if (a.symbol) { try { if (!fs.readFileSync(f, 'utf8').includes(a.symbol)) { state = 'missing'; break; } } catch {} }
+      if (!fs.existsSync(f)) { state = 'missing'; reason = 'file'; break; }
+      if (a.symbol) { try { if (!fs.readFileSync(f, 'utf8').includes(a.symbol)) { state = 'missing'; reason = 'symbol'; break; } } catch {} }
     }
     const base = m.verified_commit || m.source_commit;
     const idx = base ? commits.findIndex((c) => c.h.startsWith(base) || base.startsWith(c.h)) : -1;
@@ -472,8 +576,8 @@ export function freshness(p, mems) {
     if (state !== 'missing' && files.length) {
       if (m.hashes && Object.keys(m.hashes).length) {
         // content comparison: authoritative, also catches uncommitted edits
-        if (files.some((f) => m.hashes[f] !== undefined && hashFile(p.root, f) !== m.hashes[f])) state = 'changed';
-        else since = 0;
+        changed = files.filter((f) => m.hashes[f] !== undefined && hashFile(p.root, f) !== m.hashes[f]);
+        if (changed.length) state = 'changed'; else since = 0;
       } else {
         // legacy memory (no hashes): baseline = the file as first committed after the memory was written
         // (memories are written at session end, before the work is committed), else today's file. Persisted once.
@@ -486,10 +590,11 @@ export function freshness(p, mems) {
         }
         run('UPDATE memories SET hashes = ? WHERE id = ?', J(hashes), m.id);
         m.hashes = hashes;
-        if (files.some((f) => hashes[f] !== hashFile(p.root, f))) state = 'changed'; else since = 0;
+        changed = files.filter((f) => hashes[f] !== hashFile(p.root, f));
+        if (changed.length) state = 'changed'; else since = 0;
       }
     }
-    m.freshness = { state, commits_since: since };
+    m.freshness = { state, commits_since: since, reason, changed };
   }
   return mems;
 }
@@ -533,23 +638,43 @@ export function decayed(m) {
 }
 
 // ---------- git-driven maintenance (hourly) ----------
+// Branch knowledge becomes project knowledge when its branch is merged, also when the branch was deleted after the merge
+// (its memories' commits are in the default branch). Branch versions of project memories then replace the originals.
+// Runs at every start (cheap when there is no branch knowledge): a merge must show up in the very next session.
+export function promoteBranches(p) {
+  const branches = all(`SELECT DISTINCT branch FROM memories WHERE project_id = ? AND scope = 'branch' AND branch IS NOT NULL AND status IN ('active','stale','proposed')`, p.id);
+  const def = branches.length && defaultBranch(p.root);
+  if (!def) return;
+  const merged = new Set(git(p.root, 'branch', '--merged', def, '--format=%(refname:short)').split(/\r?\n/));
+  const existing = new Set(git(p.root, 'branch', '--format=%(refname:short)').split(/\r?\n/));
+  for (const { branch } of branches) {
+    if (branch === def) continue;
+    let isMerged = merged.has(branch);
+    if (!isMerged && !existing.has(branch)) {
+      const commits = all(`SELECT DISTINCT COALESCE(verified_commit, source_commit) AS c FROM memories WHERE project_id = ? AND scope = 'branch' AND branch = ?`, p.id, branch).map((r) => r.c).filter(Boolean);
+      isMerged = commits.length > 0 && commits.every((c) => gitRaw(p.root, 'merge-base', '--is-ancestor', c, def) !== null);
+      // ponytail: a squash-merged, deleted branch can't be proven merged; its knowledge stays branch-scoped (not lost, not loaded elsewhere)
+    }
+    if (!isMerged) continue;
+    for (const r of all(`SELECT r.a, r.b FROM memory_relations r JOIN memories m ON m.id = r.a WHERE m.project_id = ? AND m.scope = 'branch' AND m.branch = ? AND r.rel = 'supersedes'`, p.id, branch)) {
+      const old = memory(r.b);
+      if (old && old.scope === 'project' && ['active', 'stale'].includes(old.status)) updateMemory(r.b, { status: 'superseded' }, { by: 'merge', reason: `replaced by ${r.a} when ${branch} was merged` });
+    }
+    run(`UPDATE memories SET scope = 'project', branch = NULL, updated_at = ? WHERE project_id = ? AND scope = 'branch' AND branch = ?`, now(), p.id, branch);
+  }
+}
+
 export function maintain(p) {
+  promoteBranches(p);
   const key = `maintained:${p.id}`;
   const last = get(`SELECT value FROM settings WHERE scope = 'system' AND key = ?`, key)?.value;
   if (last && Date.now() - Date.parse(last) < 3600e3) return;
   run(`INSERT OR REPLACE INTO settings VALUES ('system', ?, ?)`, key, now());
   expireProposals(p.id);
-  const def = defaultBranch(p.root);
-  const branches = all(`SELECT DISTINCT branch FROM memories WHERE project_id = ? AND scope = 'branch' AND branch IS NOT NULL`, p.id);
-  if (def && branches.length) {
-    const merged = new Set(git(p.root, 'branch', '--merged', def, '--format=%(refname:short)').split('\n'));
-    const existing = new Set(git(p.root, 'branch', '--format=%(refname:short)').split('\n'));
-    for (const { branch } of branches) {
-      if (branch === def) continue;
-      if (merged.has(branch)) run(`UPDATE memories SET scope = 'project', branch = NULL, updated_at = ? WHERE project_id = ? AND scope = 'branch' AND branch = ?`, now(), p.id, branch);
-      else if (!existing.has(branch)) run(`UPDATE memories SET status = 'archived', invalid_at = ? WHERE project_id = ? AND scope = 'branch' AND branch = ?`, now(), p.id, branch);
-    }
-  }
+  // windows closed without SessionEnd (killed, crashed): end them after 12 h idle; resuming reactivates them
+  run(`UPDATE sessions SET status = 'ended', ended_at = COALESCE(last_active_at, started_at) WHERE project_id = ? AND status != 'ended'
+      AND COALESCE(last_active_at, started_at) < ? AND COALESCE((SELECT MAX(ts) FROM events e WHERE e.session_id = sessions.id), '') < ?`,
+    p.id, new Date(Date.now() - 12 * 3600e3).toISOString(), new Date(Date.now() - 12 * 3600e3).toISOString());
   const mems = all(`SELECT * FROM memories WHERE project_id = ? AND status IN ('active','stale')`, p.id).map(hydrate);
   for (const m of freshness(p, mems)) {
     const bad = m.freshness.state === 'changed' || m.freshness.state === 'missing';
@@ -575,6 +700,17 @@ export function exportProjectMd(p) {
       out += type === 'decision'
         ? `\n### ${m.title} \`${m.id}\`\n- **Decision:** ${m.body}\n${m.why ? `- **Why:** ${m.why}\n` : ''}${anc ? `- **Code:** \`${anc}\`\n` : ''}- **Status:** accepted${m.source_commit ? ` (at ${m.source_commit})` : ''}\n`
         : `- **${m.title}**: ${m.body.replace(/\n+/g, ' ')}${m.why ? ` _(why: ${m.why})_` : ''}${anc ? ` · \`${anc}\`` : ''} \`${m.id}\`\n`;
+    }
+  }
+  // the last session cards travel with the repo too (a clone elsewhere, or a lost ~/.uac, still has them)
+  const recent = all(`SELECT s.id, s.seq, s.branch, x.title, x.body, x.created_at FROM summaries x JOIN sessions s ON s.id = x.session_id
+      WHERE x.project_id = ? AND x.quality = 'llm' AND s.rolled_into IS NULL ORDER BY x.created_at DESC LIMIT 3`, p.id);
+  if (recent.length) {
+    out += `\n## Recent sessions\n`;
+    for (const r of recent) {
+      const c = card(r.id);
+      out += `\n### #${r.seq ?? '?'} ${shortId(r.id)} · ${r.branch || '-'} · ${r.created_at.slice(0, 10)}: ${r.title}\n${clip(String(r.body || '').replace(/\n{2,}/g, '\n'), 600)}\n`
+        + `${c?.next_steps?.length ? `- **Next:** ${c.next_steps.slice(0, 5).join('; ')}\n` : ''}${c?.note ? `- **Note:** ${clip(c.note, 300)}\n` : ''}`;
     }
   }
   const dir = path.join(p.root, '.context');

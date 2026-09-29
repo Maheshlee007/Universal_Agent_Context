@@ -19,7 +19,7 @@ The compressor is the first reviewer: candidates with confidence ≥ 0.7 and no 
    - Show `type · title`, body (max 3 lines), `why`, anchors, `confidence`.
    - If the anchor is checkable, check it and recommend.
    - Ask: **Accept / Reject / Edit**. Batch up to 4 per AskUserQuestion call.
-5. **Apply** each answer with `uac_resolve({id, action, body?})`:
+5. **Apply** the answers with one `uac_review({resolve:[{id, action, body?}, …]})`:
    - Accept / Keep new: `action:"accept"`. Reject / Keep existing: `action:"reject"`.
    - Edit / Merge: draft the wording, confirm it, then `action:"accept", body:<edited>`.
 6. **Finish** with one line: `accepted A, rejected R, edited E`.
@@ -27,4 +27,4 @@ The compressor is the first reviewer: candidates with confidence ≥ 0.7 and no 
 **Rules:**
 - Don't pre-decide. Recommend when it helps (code supports one side, missing `why`, noise).
 - Proposals containing secrets or credentials: recommend Reject and say why.
-- Wrong auto-accepted items are fixed in the dashboard ("Recently auto-accepted" → undo / invalidate) or with `uac_invalidate`.
+- Wrong auto-accepted items (marked "new" in the dashboard's Knowledge groups) are fixed there with Edit / Invalidate, or with `uac_update({id, status:"superseded", reason})`.

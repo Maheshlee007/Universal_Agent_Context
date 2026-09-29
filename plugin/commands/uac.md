@@ -17,11 +17,11 @@ First word of `$ARGUMENTS` = action, the rest = arguments. No action = `status`.
 
 **off** — `uac_capture({state:"off"})`. Reply `UAC off for this session`.
 
-**pause** — `uac_checkpoint({goal, working, broken, files, next_steps, note})` with the current state (`note` = what you'd tell the next dev), then `uac_capture({state:"paused"})`. Reply `UAC paused - checkpoint saved`.
+**pause** — `uac_capture({state:"paused"})` (the hook writes a snapshot of the unsaved work). Reply `UAC paused`.
 
 **resume** — `uac_capture({state:"on"})`. Reply `UAC recording`.
 
-**save** — Spawn the `universal-agent-context:uac-compressor` subagent (Agent tool, `model: "haiku"`, foreground) with the prompt `session_id=<session_id>`. If it is unavailable or fails, call `uac_digest` yourself and follow its `how_to_save`. Relay its one-line result. Don't summarize the session yourself.
+**save** — Spawn `universal-agent-context:uac-compressor` (Agent tool, `model: "haiku"`, foreground) with the prompt the UAC header gives (it starts `session_id=<id>. Step 0: ToolSearch …`). Its reply must start with `UAC saved:`; if it doesn't, or the agent is unavailable, call `uac_digest` yourself and follow its `how_to_save`. Relay its one-line result. Don't summarize the session yourself.
 
 **stop** — Do **save**, then `uac_capture({state:"off"})`. Reply `UAC stopped - saved and off`.
 
@@ -54,6 +54,6 @@ First word of `$ARGUMENTS` = action, the rest = arguments. No action = `status`.
 
 **refresh** — Follow the `uac-refresh` skill.
 
-**forget <id | query>** — Given a query, `uac_search` first and confirm the ids with AskUserQuestion. Then `uac_invalidate({id, reason:"user asked to forget"})` for each. Permanent deletion is the user's job, via the dashboard (`view`) or `uac forget <id>`.
+**forget <id | query>** — Given a query, `uac_search` first and confirm the ids with AskUserQuestion. Then `uac_update({id, status:"superseded", reason:"user asked to forget"})` for each. Permanent deletion is the user's job, via the dashboard (`view`) or `uac forget <id>`.
 
 Anything else: list the actions above in one line.

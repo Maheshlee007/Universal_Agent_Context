@@ -18,7 +18,7 @@ Stale memories (⚠ file changed since recorded, ✗ anchor not found) point to 
    - Decide:
      - **Still true:** collect the id; at the end call `uac_verify({ids:[…]})` once. This bumps `last_verified_at` without writing a new version.
      - **Partly true:** `uac_update({id, body, anchors, reason, evidence})` with the corrected body, identifiers quoted verbatim, and anchors pointing at the current `{file, symbol, line}`.
-     - **No longer true:** `uac_invalidate({id, reason, superseded_by?})`. If something replaced it, first `uac_propose` the new version, then pass its id as `superseded_by`.
+     - **No longer true:** `uac_update({id, status:"superseded", reason, superseded_by?})`. If something replaced it, first `uac_propose` the new version, then pass its id as `superseded_by`.
      - **Can't tell:** leave it, and list it for the user with the question you couldn't answer.
 3. Never mark something verified without actually opening the current file.
 4. **Report** in one line: `refreshed N: confirmed A, updated B, invalidated C, unresolved D`. Then list the unresolved ones.

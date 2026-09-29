@@ -110,7 +110,8 @@ test('save: confident items auto-accepted, low-confidence waits; anchors; events
 
 test('next session: auto-loads knowledge + latest card on the branch, no questions; anchors show freshness', () => {
   const c = ctxOf(hook('SessionStart', { session_id: 'sess-2', source: 'startup' }));
-  assert.match(c, /Continuing from \(latest session on this branch\)[\s\S]*Add refresh token rotation/);
+  assert.match(c, /Continuing from \(most recent session on this branch\)[\s\S]*Add refresh token rotation/);
+  assert.match(c, /Loaded ~\d+ tok: card #\d+ \S+ \+ \d+\/\d+ knowledge items\. (Nothing else stored|Not loaded)/, 'one line says what was and was not loaded');
   assert.match(c, /Must not violate[\s\S]*Never log tokens/);
   assert.match(c, /rotateRefreshToken@src\/auth\.js:1/);
   assert.doesNotMatch(c, /Ask the user/);
@@ -359,7 +360,7 @@ test('projects: same git remote = one project; temp scratch dirs never registere
   fs.mkdirSync(scratch, { recursive: true });
   const before = S.listProjects().length;
   const r = spawnSync(process.execPath, [BIN, 'hook', 'claude', 'SessionStart'], { input: JSON.stringify({ cwd: scratch, session_id: 'scr', source: 'startup' }), encoding: 'utf8', env: process.env });
-  assert.equal(r.stdout, ''); assert.equal(S.listProjects().length, before);
+  assert.match(r.stdout, /off here: .* is a temp\/scratch folder/); assert.equal(S.listProjects().length, before); // said once, nothing registered
   const other = path.join(tmp, 'other'); fs.mkdirSync(other);
   const o = S.projectFor(other).id;
   S.mergeProjects(o, a);
@@ -387,7 +388,7 @@ test('dashboard API: token, sessions with cards, cascade delete, next, verify, m
   const s1 = sessions.find((x) => x.card && x.n); // earlier rollup test hid sess-1 inside a rollup; any visible carded session works
   assert.ok(s1.n >= 1 && s1.card.title);
   assert.deepEqual((await j(`/api/next?project=${P2}`, 'PUT', { sessions: [String(s1.n)] })).sessions, [s1.id]);
-  assert.ok((await j(`/api/sessions?project=${P2}&all=1`)).some((x) => x.rolled_into && x.n === null), 'rolled-up sessions listed with all=1, unnumbered');
+  assert.ok((await j(`/api/sessions?project=${P2}&all=1`)).some((x) => x.rolled_into && x.n > 0), 'rolled-up sessions listed with all=1, keeping their stable #n');
   const mem = (await j(`/api/memories?project=${P2}`)).find((m) => m.id === decisionId);
   assert.ok(mem.freshness);
   assert.equal((await j(`/api/memories/${decisionId}/verify`, 'POST')).id, decisionId);
@@ -407,7 +408,7 @@ test('dashboard API: token, sessions with cards, cascade delete, next, verify, m
   server.close();
 });
 
-test('MCP stdio protocol: initialize, tools/list (19 tools), tools/call, errors', async () => {
+test('MCP stdio protocol: initialize, tools/list (13 tools), tools/call, errors', async () => {
   const child = spawn(process.execPath, [BIN, 'mcp'], { cwd: repo, env: process.env });
   let buf = '';
   const replies = [];
@@ -422,7 +423,7 @@ test('MCP stdio protocol: initialize, tools/list (19 tools), tools/call, errors'
   child.kill();
   const by = Object.fromEntries(replies.map((r) => [r.id, r]));
   assert.equal(by[1].result.serverInfo.name, 'uac');
-  assert.equal(by[2].result.tools.length, 19);
+  assert.equal(by[2].result.tools.length, 13);
   assert.match(by[3].result.content[0].text, /tokens/i);
   assert.equal(by[4].result.isError, true);
 });
@@ -445,4 +446,68 @@ test('handoff marks this session as the next session context', async () => {
 test('doctor reports db path, integrity, fts5', () => {
   const d = cli('doctor');
   assert.equal(d.integrity, 'ok'); assert.equal(d.fts5, true); assert.match(d.db, /uac\.db$/);
+});
+
+test('v0.5: stable #n + refs, save validation, project scoping, non-git subfolders, messages once, branch versions', async () => {
+  // stable numbers: a new session never shifts the others; "#n", "n", short id and id resolve alike
+  const before = Object.fromEntries(S.listSessions(pid()).map((x) => [x.id, x.n]));
+  hook('SessionStart', { session_id: 'sess-v5', source: 'startup' });
+  hook('UserPromptSubmit', { session_id: 'sess-v5', prompt: 'Refactor the login form' });
+  const after = S.listSessions(pid());
+  for (const x of after) if (before[x.id]) assert.equal(x.n, before[x.id], `#n of ${x.id} moved`);
+  const me = after.find((x) => x.id === 'sess-v5');
+  for (const r of [`#${me.n}`, String(me.n), me.short, 'sess-v5']) assert.equal(S.resolveSessionRef(pid(), r), 'sess-v5', r);
+  const bad = await callTool('uac_get', { ids: ['#999'] });
+  assert.match(bad[0].error, /no session "#999"[\s\S]*#\d+ \S+ "/, 'the error lists valid refs');
+  assert.match(await callTool('uac_sessions', {}), new RegExp(`#${me.n} ${me.short} \\(this session\\)`));
+
+  // an incomplete card is refused and deletes nothing
+  for (let i = 0; i < 3; i++) hook('PostToolUse', { session_id: 'sess-v5', tool_name: 'Edit', tool_input: { file_path: 'src/auth.js' }, tool_response: 'e' });
+  const n0 = S.unsavedCount(S.session('sess-v5'));
+  await assert.rejects(callTool('uac_save', { session_id: 'sess-v5', upto_event_id: 1e9, summary: 'did stuff', checkpoint: 'next: tests' }), /refused, nothing written or deleted/);
+  assert.equal(S.unsavedCount(S.session('sess-v5')), n0);
+
+  // near-duplicates are refused with the id to update; another project's memory is out of reach
+  const orig = await callTool('uac_propose', { session_id: 'sess-v5', type: 'fact', title: 'Login form posts to /api/login with JSON', body: 'The login form posts JSON to /api/login', confidence: 0.9 });
+  const origId = orig.match(/m-[0-9a-f]+/)[0];
+  assert.match(await callTool('uac_propose', { session_id: 'sess-v5', type: 'fact', title: 'Login form posts JSON to /api/login', body: 'The login form posts JSON to /api/login endpoint', confidence: 0.9 }), new RegExp(`near-duplicate of ${origId}`));
+  const other = path.join(tmp, 'other-v5'); fs.mkdirSync(other);
+  const po = S.projectFor(other);
+  const foreign = S.propose({ type: 'decision', title: 'Other project secret decision', body: 'x', why: 'y', confidence: 0.9 }, { p: po });
+  assert.match((await callTool('uac_get', { ids: [foreign.id] }))[0].error, /not found in this project/);
+  await assert.rejects(callTool('uac_update', { session_id: 'sess-v5', id: foreign.id, body: 'overwritten', reason: 'r' }), /no memory .* in this project/);
+  assert.equal(S.memory(foreign.id).body, 'x');
+
+  // non-git: a subfolder of a registered folder is the same project; read-only CLI commands register nothing
+  const plain = path.join(tmp, 'plain-v5'); fs.mkdirSync(path.join(plain, 'sub', 'dir'), { recursive: true });
+  const pp = S.projectFor(plain);
+  assert.equal(S.projectFor(path.join(plain, 'sub', 'dir')).id, pp.id);
+  const loose = path.join(tmp, 'loose-v5'); fs.mkdirSync(loose);
+  const nProj = S.listProjects().length;
+  spawnSync(process.execPath, [BIN, 'status', '--cwd', loose], { encoding: 'utf8', env: process.env });
+  spawnSync(process.execPath, [BIN, 'doctor', '--cwd', loose], { encoding: 'utf8', env: process.env });
+  assert.equal(S.listProjects().length, nProj, 'status/doctor must not register a project');
+
+  // a message to a branch reaches the sessions open at the time (or the next one), not every later session
+  S.postMessage(S.session('sess-v5'), S.projectFor(repo), 'API contract changed: POST /api/login returns {token}', 'branch:main');
+  hook('SessionStart', { session_id: 'sess-v5b', source: 'startup' });
+  hook('UserPromptSubmit', { session_id: 'sess-v5b', prompt: 'go' });
+  const got = (sid) => S.open().prepare(`SELECT COUNT(*) AS n FROM message_reads r JOIN messages m ON m.id = r.message_id WHERE r.session_id = ? AND m.text LIKE 'API contract changed%'`).get(sid).n;
+  assert.equal(got('sess-v5b'), 1, 'the next session gets it');
+  hook('SessionStart', { session_id: 'sess-v5c', source: 'startup' });
+  hook('UserPromptSubmit', { session_id: 'sess-v5c', prompt: 'another task' });
+  assert.equal(got('sess-v5c'), 0, 'a later session does not get it again');
+
+  // on a feature branch, updating project knowledge writes a branch version; the default branch keeps the original
+  g('checkout', '-q', '-b', 'feature/v5');
+  hook('SessionStart', { session_id: 'sess-br', source: 'startup' });
+  hook('UserPromptSubmit', { session_id: 'sess-br', prompt: 'Change the login endpoint' });
+  for (let i = 0; i < 3; i++) hook('PostToolUse', { session_id: 'sess-br', tool_name: 'Edit', tool_input: { file_path: 'src/auth.js' }, tool_response: 'e' });
+  const d = await callTool('uac_digest', { session_id: 'sess-br' });
+  const r = await callTool('uac_save', { session_id: 'sess-br', base_event_id: d.base_event_id, upto_event_id: d.upto_event_id,
+    summary: { title: 'Move login to /api/v2/login', body: 'b' }, checkpoint: { goal: 'g', note: 'n' },
+    candidates: [{ op: 'update', id: origId, body: 'The login form posts JSON to /api/v2/login', confidence: 0.9 }] });
+  assert.match(r.warnings.join(' '), /replaces it when the branch is merged/);
+  assert.equal(S.memory(origId).body, 'The login form posts JSON to /api/login', 'project memory untouched on the branch');
+  g('checkout', '-q', 'main');
 });

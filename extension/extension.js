@@ -39,7 +39,7 @@ function ago(iso) {
   for (const [n, u] of [[86400, 'd'], [3600, 'h'], [60, 'm']]) if (s >= n) return `${Math.floor(s / n)}${u} ago`;
   return 'just now';
 }
-const sessTitle = (s) => `#${s.n ?? '?'} ${s.card?.title || s.title || s.id.slice(0, 8)}`;
+const sessTitle = (s) => `#${s.n ?? '-'} ${s.short || s.id.slice(0, 8)} ${s.card?.title || s.title || ''}`.trim();
 const sessDesc = (s) => [s.branch, s.agent, ago(s.ended_at || s.started_at)].filter(Boolean).join(' · ');
 
 // ---------- status bar + polling ----------
@@ -370,7 +370,10 @@ async function reinstallIfUpdated(context) {
   const was = context.globalState.get('uac.installedVersion');
   const now = context.extension.packageJSON.version;
   if (!was || was === now) return;
-  try { await uac(['install']); context.globalState.update('uac.installedVersion', now); } catch { /* keep old paths; user can run UAC: Install */ }
+  try { await uac(['install']); context.globalState.update('uac.installedVersion', now); } catch { return; /* keep old paths; user can run UAC: Install */ }
+  // running Claude Code sessions keep the old hooks/MCP server until reloaded: offer it instead of leaving them stale
+  const a = await vscode.window.showInformationMessage(`UAC updated to ${now}. Reload the window so open Claude Code sessions use it (or type /reload-plugins in each).`, 'Reload Window');
+  if (a) vscode.commands.executeCommand('workbench.action.reloadWindow');
 }
 
 // ---------- lifecycle ----------

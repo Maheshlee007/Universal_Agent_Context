@@ -7,11 +7,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { all, get, run, J, home, open, hasFts } from './db.mjs';
+import { all, get, run, J, P, home, open, hasFts } from './db.mjs';
+import { VERSION, claudeInstalled } from './util.mjs';
 import * as S from './store.mjs';
 import * as K from './pack.mjs';
 
-const ROOT = import.meta.url ? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..') : path.dirname(process.execPath);
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HOSTS = ['claude', 'codex', 'gemini', 'antigravity', 'cursor', 'copilot'];
 const USAGE = `Universal Agent Context (UAC)
 usage: uac <command> [options] [--json] [--cwd DIR]
@@ -19,7 +20,7 @@ usage: uac <command> [options] [--json] [--cwd DIR]
   status                         mode, recording, memory counts, next-session choice
   mode off|manual|automatic      off = UAC does nothing · manual = load context, record only on "#uac on" · automatic = load + record + auto-save
   capture on|paused|off          recording for the current session
-  sessions [--active]            numbered list (#1 = newest)       session <n|id>   everything stored for one session
+  sessions [--active] [--all]    list (#n is stable, short id beside it)   session <n|id> [--raw]   everything stored / raw log
   next <n…> | --clear            the next session continues from these sessions (one-shot)
   rm <n|id…> | --empty [--yes]   delete sessions (cascades events, card, memories they created) · --dry-run shows counts
   name "<title>" [--session n]   rename a session (auto-named from its first prompt)
@@ -46,8 +47,8 @@ const onPath = (cmd) => spawnSync(process.platform === 'win32' ? 'where' : 'whic
 export async function main(argv) {
   const { values: o, positionals: [cmd, ...args] } = parseArgs({
     args: argv, allowPositionals: true, strict: false,
-    options: { json: { type: 'boolean' }, cwd: { type: 'string' }, session: { type: 'string' }, tier: { type: 'string' },
-      pack: { type: 'string' }, capture: { type: 'string' }, port: { type: 'string' }, 'no-open': { type: 'boolean' },
+    options: { json: { type: 'boolean' }, cwd: { type: 'string' }, session: { type: 'string' }, raw: { type: 'boolean' },
+      capture: { type: 'string' }, port: { type: 'string' }, 'no-open': { type: 'boolean' },
       'dry-run': { type: 'boolean' }, active: { type: 'boolean' }, type: { type: 'string' }, status: { type: 'string' },
       ids: { type: 'string' }, name: { type: 'string' }, next: { type: 'boolean' }, clear: { type: 'boolean' },
       empty: { type: 'boolean' }, yes: { type: 'boolean' }, to: { type: 'string' }, sessions: { type: 'string' },
@@ -55,7 +56,12 @@ export async function main(argv) {
   });
   const out = (data, text) => console.log(o.json ? JSON.stringify(data, null, 1) : (text ?? (typeof data === 'string' ? data : JSON.stringify(data, null, 1))));
   const cwd = o.cwd || process.cwd();
-  const proj = () => S.projectFor(cwd);
+  const WRITES = new Set(['mode', 'capture', 'msg', 'import', 'export']);
+  const proj = () => {
+    const p = S.projectFor(cwd, { create: WRITES.has(cmd) });
+    if (!p.id && !['doctor', 'status'].includes(cmd)) throw new Error(`no UAC project here (${p.root}): start an agent session in this folder first, or set a mode with "uac mode manual"`);
+    return p;
+  };
   const sess = (p) => {
     const s = o.session ? S.session(S.resolveSessionRefs(p.id, [o.session])[0]) : S.currentSession(p.id);
     if (!s) throw new Error('no UAC session for this project (start one in your agent, or pass --session)');
@@ -69,6 +75,7 @@ export async function main(argv) {
 
     case 'status': {
       const p = proj();
+      if (!p.id) return out({ project: null, root: p.root }, `no UAC project at ${p.root} yet (it is registered when an agent session starts here)`);
       const s = S.currentSession(p.id);
       const data = { project: { id: p.id, root: p.root, name: p.name, mode: p.mode, branch: p.branch }, session: s ? { id: s.id, capture: s.capture, status: s.status } : null,
         counts: S.counts(p.id), next_sessions: S.nextSessions(p.id), unsaved: S.unsavedSessions(p.id).map(({ session_id, events }) => ({ session_id, events })),
@@ -80,16 +87,10 @@ export async function main(argv) {
     }
     case 'capture': { const p = proj(); const s = sess(p); S.setCapture(s.id, args[0]); return out({ ok: true, session_id: s.id, capture: args[0] }, `recording=${args[0]} (${s.id})`); }
     case 'mode': { const p = proj(); S.setMode(p.id, args[0]); return out({ ok: true, mode: args[0] }, `mode=${args[0]} for ${p.name}`); }
-    case 'choose': { // used by older extension builds
-      const p = proj(); const s = sess(p);
-      run('UPDATE sessions SET choice = ? WHERE id = ?', J({ tier: o.tier, pack: o.pack, capture: o.capture, sessions: o.sessions?.split(',') }), s.id);
-      if (o.capture) S.setCapture(s.id, o.capture);
-      return out({ ok: true }, `choice stored for ${s.id}`);
-    }
     case 'sessions': {
       const rows = S.listSessions(proj().id, { active: o.active, all: o.all });
-      return out(rows, rows.map((r) => `#${String(r.n ?? (r.phantom ? "-" : "~")).padEnd(3)} ${(r.card?.title || r.title || `${r.agent} session, ${r.events} events, no card`).slice(0, 70).padEnd(70)} [${r.branch || '-'}] ${r.agent}${r.model ? `/${r.model}` : ''} · ${ago(r.started_at)}` +
-        `${r.card ? (r.card.quality === 'auto' ? ' · auto card' : ' · card') : ''}${r.unsaved ? ` · ${r.unsaved} unsaved` : ''}${r.capture === 'on' ? ' · REC' : ''}${r.next ? ' · NEXT' : ''}${r.phantom ? ' · phantom (never used, auto-deleted)' : ''}`).join('\n') || '(no sessions)');
+      return out(rows, rows.map((r) => `#${String(r.n ?? '-').padEnd(4)} ${r.short} ${(r.card?.title || r.title || `${r.agent} session, ${r.events} events, no card`).slice(0, 70).padEnd(70)} [${r.branch || '-'}] ${r.agent}${r.model ? `/${r.model}` : ''} · ${ago(r.started_at)}` +
+        `${r.live ? ' · LIVE' : ''}${r.card ? (r.card.quality === 'auto' ? ' · auto card' : ' · card') : ''}${r.unsaved >= 3 || (r.unsaved && !r.card) ? ` · ${r.unsaved} unsaved` : ''}${r.raw ? '' : ' · no raw'}${r.capture === 'on' ? ' · REC' : ''}${r.next ? ' · NEXT' : ''}${r.phantom ? ' · phantom (never used, auto-deleted)' : ''}`).join('\n') || '(no sessions)');
     }
     case 'name': {
       const p = proj(); const s = sess(p);
@@ -125,14 +126,13 @@ export async function main(argv) {
     }
     case 'next': {
       const p = proj();
-      if (o.clear) { S.setNextSessions(p.id, []); S.setNextPack(p.id, null); return out({ sessions: [] }, 'next session: latest session on the same branch (default)'); }
-      if (o.pack) return out({ pack: S.setNextPack(p.id, o.pack) }, `next session loads pack ${o.pack}`);
+      if (o.clear) { S.setNextSessions(p.id, []); return out({ sessions: [] }, 'next session: latest session on the same branch (default)'); }
       if (!args.length) { const n = S.nextSessions(p.id); return out({ sessions: n }, `next session continues from: ${n.length ? n.join(', ') : 'latest session on the same branch (default)'}`); }
       const ids = S.resolveSessionRefs(p.id, args);
       if (!ids.length) throw new Error(`no sessions match ${args.join(' ')} (see "uac sessions")`);
       S.setNextSessions(p.id, ids);
       const list = S.listSessions(p.id, { limit: 200 });
-      return out({ sessions: ids }, `next session continues from:\n${ids.map((id) => { const x = list.find((r) => r.id === id); return `  #${x?.n} ${x ? K.sessionLabel(x, 80) : id}`; }).join('\n')}`);
+      return out({ sessions: ids }, `next session continues from:\n${ids.map((id) => { const x = list.find((r) => r.id === id); return `  ${x ? S.ref(x) : id} ${x ? K.sessionLabel(x, 80) : ''}`; }).join('\n')}`);
     }
     case 'rm': {
       const p = proj();
@@ -203,16 +203,6 @@ export async function main(argv) {
       const rows = S.listProjects();
       return out(rows, rows.map((r) => `${r.id}  ${r.name.padEnd(28)} ${String(r.sessions).padStart(4)} sessions ${String(r.memories).padStart(4)} memories  mode=${r.mode || '-'}  ${r.root}${r.git_remote ? `  (${r.git_remote})` : ''}`).join('\n'));
     }
-    case 'packs': {
-      const rows = K.listPacks(proj().id);
-      return out(rows, rows.map((k) => `${k.id}${k.next ? ' [NEXT]' : ''}  ${k.name}  (${k.item_ids.length} items)`).join('\n') || '(no packs)');
-    }
-    case 'pack': {
-      const ids = (o.ids || '').split(',').map((x) => x.trim()).filter(Boolean);
-      if (!ids.length) throw new Error('--ids a,b,c required');
-      const k = K.createPack(proj(), null, { ids, name: o.name, next: !!o.next });
-      return out(k, `created ${k.id} (${ids.length} items)${k.next ? ', loads in the next session' : ''}`);
-    }
     case 'export': { const f = S.exportProjectMd(proj()); return out({ ok: true, file: f }, `wrote ${f}`); }
     case 'backup': {
       const dir = path.join(home(), 'backups');
@@ -240,6 +230,14 @@ export async function main(argv) {
       const d = { node: process.version, node_ok: Number(process.versions.node.split('.')[0]) > 22 || (process.versions.node.startsWith('22.') && Number(process.versions.node.split('.')[1]) >= 13),
         db, db_bytes: size(db), wal_bytes: size(db + '-wal'), integrity: get('PRAGMA integrity_check').integrity_check, fts5: hasFts,
         project: p.root, branch: p.branch, mode: p.mode, counts: S.counts(p.id), projects: S.listProjects().length,
+        // which UAC is actually running where: this CLI, what Claude Code has installed, and what hooks/MCP last reported
+        versions: (() => {
+          const u = { cli: `${VERSION} (${ROOT})`, claude_installed: (() => { const c = claudeInstalled(); return c ? `${c.version} (${c.path})` : null; })() };
+          for (const k of ['hooks', 'mcp']) { const r = P(get(`SELECT value FROM settings WHERE scope = 'system' AND key = ?`, `running:${k}`)?.value, null); u[k] = r ? `${r.version} (${r.root}) at ${r.at}` : null; }
+          const vs = new Set(Object.values(u).filter(Boolean).map((x) => x.split(' ')[0]));
+          if (vs.size > 1) u.warning = 'versions differ: type /reload-plugins in open Claude Code sessions (or restart them)';
+          return u;
+        })(),
         hook_errors: fs.existsSync(errLog) ? fs.readFileSync(errLog, 'utf8').trim().split('\n').filter((l) => !/^\s+at /.test(l)).slice(-5) : [] };
       return out(d, Object.entries(d).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join('\n'));
     }
@@ -250,8 +248,7 @@ export async function main(argv) {
 
 async function install(host, o, out) {
   const { adapters } = await import('./adapters/index.mjs');
-  const { isSea } = await import('node:sea');
-  const uacCmd = isSea() ? `"${process.execPath}"` : `node "${path.join(ROOT, 'bin', 'uac.mjs')}"`;
+  const uacCmd = `node "${path.join(ROOT, 'bin', 'uac.mjs')}"`;
   const one = (h) => adapters[h].install({ root: ROOT, uacCmd, dryRun: !!o['dry-run'] });
   if (host) {
     if (!HOSTS.includes(host)) throw new Error(`host must be one of ${HOSTS.join(', ')}`);

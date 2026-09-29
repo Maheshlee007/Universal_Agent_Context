@@ -23,5 +23,5 @@ Ideas are cheap and must stay labelled as ideas. You use the uac MCP tools (shor
 ## Rules
 
 - The type is **always `idea`**. Never `fact`, `decision`, `requirement` or `task`, even if the user likes one.
-- If the user then commits to an idea, that's a separate step. Record a `decision` (ADR style, with why) that references the idea id, and optionally `uac_invalidate` the idea with `superseded_by`.
+- If the user then commits to an idea, that's a separate step. Record a `decision` (ADR style, with why) that references the idea id, and optionally retire the idea: `uac_update({id, status:"superseded", superseded_by, reason})`.
 - To argue whether an idea is needed at all, use `uac-yagni`.

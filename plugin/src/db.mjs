@@ -84,6 +84,9 @@ const V3_COLUMNS = [
   // save_asked = last event id at which the Stop hook asked for a save (no re-ask every turn if a save failed)
   ['sessions', 'prompts INTEGER DEFAULT 0'], ['sessions', 'last_active_at TEXT'], ['sessions', 'save_asked INTEGER DEFAULT 0'], ['summaries', 'events_n INTEGER'],
   ['checkpoints', 'gaps TEXT'],
+  // v0.5: seq = stable per-project session number (#n never moves); hook/mcp_version = which UAC served this session;
+  // save_retry = the save request (event id) we already asked to retry once
+  ['sessions', 'seq INTEGER'], ['sessions', 'hook_version TEXT'], ['sessions', 'mcp_version TEXT'], ['sessions', 'save_retry INTEGER DEFAULT 0'], ['sessions', 'ver_warned INTEGER DEFAULT 0'],
 ];
 function migrate() {
   for (const [t, col] of V3_COLUMNS) { try { db.exec(`ALTER TABLE ${t} ADD COLUMN ${col}`); } catch { /* exists */ } }

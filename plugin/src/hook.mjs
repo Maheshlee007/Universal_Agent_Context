@@ -4,7 +4,7 @@ import path from 'node:path';
 import { run, get, home, spool, now, checkpointWal, P } from './db.mjs';
 import * as S from './store.mjs';
 import * as K from './pack.mjs';
-import { clip, redact, target, enableGitCache } from './util.mjs';
+import { clip, redact, target, enableGitCache, VERSION } from './util.mjs';
 import { adapters } from './adapters/index.mjs';
 import { importTranscript } from './import.mjs';
 
@@ -66,8 +66,13 @@ function control(s, p, cmd, rest) {
   return null;
 }
 
+// a first prompt of "go on" / "continue" / "ok" says nothing about the session: not a title
+const TRIVIAL = /^\s*(go on|continue|ok(ay)?|yes|y|no|n|next|proceed|thanks?|thank you|hi|hello|do it|carry on|resume)\s*[.!]*\s*$/i;
+
 export function handle(ev) {
-  if (process.env.UAC_DISABLE || S.isScratch(ev.cwd)) return {};
+  if (process.env.UAC_DISABLE) return {};
+  if (S.isScratch(ev.cwd)) // say it once instead of a silent no-op that looks like a bug to anyone testing in a temp folder
+    return ev.event === 'start' ? { context: `[UAC] off here: ${ev.cwd} is a temp/scratch folder (set UAC_ALLOW_SCRATCH=1 to record in one).` } : {};
   if (ev.event === 'end') {
     const s = S.session(ev.session_id);
     if (!s) return {};
@@ -79,7 +84,9 @@ export function handle(ev) {
     return {};
   }
   const { s, created } = S.ensureSession(ev);
-  const p = ev.event === 'start' || created ? S.projectFor(ev.cwd) : S.project(s.project_id);
+  // an existing session always belongs to its own project, even when the agent cd'd into another folder
+  const p = created ? S.projectFor(ev.cwd) : S.projectFor(S.project(s.project_id).root);
+  run('UPDATE sessions SET hook_version = ? WHERE id = ? AND COALESCE(hook_version, \'\') != ?', VERSION, s.id, VERSION);
 
   switch (ev.event) {
     case 'start':
@@ -94,7 +101,13 @@ export function handle(ev) {
       if (needStart) out.push(K.startContext(s, p));
       // the first real prompt makes the session real: count it (no text) and consume one-shot "continue from" picks it loaded
       run('UPDATE sessions SET prompts = COALESCE(prompts, 0) + 1, last_active_at = ? WHERE id = ?', now(), s.id);
-      if (!s.prompts && P(S.session(s.id).loaded, {}).one_shot) { S.setNextSessions(p.id, []); S.setNextPack(p.id, null); }
+      if (!s.prompts && P(S.session(s.id).loaded, {}).one_shot) S.setNextSessions(p.id, []);
+      // the MCP server of this session turned out to run another version (it stamps the session on its first tool call)
+      const v = S.session(s.id);
+      if (v.mcp_version && v.mcp_version !== VERSION && !v.ver_warned) {
+        out.push(`[UAC] ⚠ This session's MCP server runs UAC ${v.mcp_version} but its hooks run ${VERSION}. Tell the user: /reload-plugins or restart the session.`);
+        run('UPDATE sessions SET ver_warned = 1 WHERE id = ?', s.id);
+      }
       const m = CONTROL.exec(prompt);
       if (m) {
         let r;
@@ -105,13 +118,15 @@ export function handle(ev) {
       const text = prompt.replace(CONTROL, ' ').trim();
       if (text && cur.capture === 'on') {
         S.addEvent(cur, 'prompt', { body: text });
-        if (!cur.title) S.renameSession(cur.id, clip(redact(text.split('\n')[0]), 60)); // named at start; the compressor improves it on save
+        // named from the first meaningful prompt; the compressor improves it on save
+        if (!cur.title && !TRIVIAL.test(text)) S.renameSession(cur.id, clip(redact(text.split('\n')[0]), 60));
       }
       if (text && cur.capture === 'ask') S.addEvent(cur, 'pending', { body: text }); // kept only if the user opts in
       if (!created && p.mode !== 'off') {
         const msgs = S.unreadMessages(cur);
         if (msgs.length) {
-          out.push(`[UAC] Message(s) from other sessions:\n${msgs.map((x) => `- from ${x.from_agent}${x.from_branch ? ` on \`${x.from_branch}\`` : ''}: ${x.text}`).join('\n')}`);
+          const from = (x) => { const f = x.from_session && S.session(x.from_session); return `${x.from_agent}${f ? ` ${S.ref(f)}` : ''}${x.from_branch ? ` on \`${x.from_branch}\`` : ''}`; };
+          out.push(`[UAC] Message(s) from other sessions (reply: uac_message {to:"session:<id>", text}):\n${msgs.map((x) => `- from ${from(x)}: ${x.text}`).join('\n')}`);
           S.markRead(cur, msgs);
         }
       }
@@ -127,11 +142,16 @@ export function handle(ev) {
       return {};
     }
 
-    case 'subagent_stop':
+    case 'subagent_stop': {
       touch(s.id);
-      if (s.capture === 'on' && ev.last_message && !/uac-compressor/.test(ev.agent_type || '') && !COMPACTION_SUMMARY.test(ev.last_message))
+      const compressor = /uac-compressor/.test(ev.agent_type || '');
+      // a compressor that stops without "UAC saved:" gave up (tools not loaded, confusion): send it back once with the recipe
+      if (compressor && !ev.stop_hook_active && !/^\s*UAC saved:/m.test(ev.last_message || ''))
+        return { block: K.COMPRESSOR_RETRY };
+      if (s.capture === 'on' && ev.last_message && !compressor && !COMPACTION_SUMMARY.test(ev.last_message))
         S.addEvent(s, 'subagent', { body: `${ev.agent_type ? `[${ev.agent_type}] ` : ''}${ev.last_message}`, agent_id: ev.agent_id });
       return {};
+    }
 
     case 'precompact':
       if (s.capture === 'on') K.snapshot(s, 'precompact');
@@ -139,11 +159,25 @@ export function handle(ev) {
 
     case 'stop': {
       if (s.capture === 'on' && ev.last_message && !ev.stop_hook_active) S.addEvent(s, 'assistant', { body: clip(ev.last_message, 1200) });
-      if (s.capture !== 'on' || p.mode !== 'automatic' || ev.stop_hook_active || S.unsavedCount(s) < K.STOP_THRESHOLD) return {};
-      // asked before and nothing got saved (subagent failed / was skipped): ask again only after another STOP_THRESHOLD events
+      if (s.capture !== 'on' || p.mode !== 'automatic' || ev.stop_hook_active) return {};
+      if (S.unsavedCount(s) < K.STOP_THRESHOLD) {
+        // this session doesn't need a save yet: finish an earlier session that ended unsaved (once, marked on that session)
+        const o = K.pendingOther(p, s);
+        if (!o) return {};
+        run('UPDATE sessions SET save_asked = (SELECT MAX(id) FROM events WHERE session_id = ?) WHERE id = ?', o.id, o.id);
+        return { block: `[UAC] Session ${S.ref(o)} ended with ${o.unsaved} unsaved events. ${K.saveInstruction(o.id, s.agent).replace('[UAC] Save requested. ', '')}` };
+      }
       const last = get('SELECT MAX(id) AS m FROM events WHERE session_id = ?', s.id).m || 0;
       const cur = S.session(s.id);
-      if (cur.save_asked > cur.saved_event_id && last - cur.save_asked < K.STOP_THRESHOLD) return {};
+      if (cur.save_asked > cur.saved_event_id) {
+        // asked and it didn't land (the subagent failed or was skipped): say so and retry ONCE; then only after 40 more events
+        if (cur.save_retry < cur.save_asked && last > cur.save_asked) {
+          run('UPDATE sessions SET save_retry = ? WHERE id = ?', cur.save_asked, s.id);
+          return { block: `[UAC] The save requested earlier did not land (no card was written). Retry once now: ${saveInstruction(s.id, s.agent).replace('[UAC] Save requested. ', '')}`,
+            message: 'UAC: the last automatic save did not complete; retrying once.' };
+        }
+        if (last - cur.save_asked < K.STOP_THRESHOLD) return {};
+      }
       run('UPDATE sessions SET save_asked = ? WHERE id = ?', last, s.id);
       return { block: saveInstruction(s.id, s.agent) };
     }

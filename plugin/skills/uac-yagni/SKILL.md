@@ -42,4 +42,4 @@ The default answer is "not yet". The burden of proof is on building. You use the
 ## Rules
 
 - A YAGNI verdict is a `decision`, never a `fact`.
-- If a newer verdict replaces an old one, pass the old id to `uac_invalidate({id, reason, superseded_by:<new id>})`.
+- If a newer verdict replaces an old one, pass the old id to `uac_update({id, status:"superseded", reason, superseded_by:<new id>})`.

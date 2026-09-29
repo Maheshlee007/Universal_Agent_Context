@@ -42,7 +42,7 @@ Call `uac_propose` once per item, with `scope:"project"`:
 - Aim for 10 to 30 memories. Stop when more would only restate the code.
 - The server stamps `source_commit`. Don't invent commit ids.
 - Never record secrets or values from `.env*`, keys, or credential files.
-- If an existing memory is still right, `uac_verify({ids})`. If it's wrong, use `uac_update({id, body, anchors, reason, evidence})` or `uac_invalidate`. Don't propose a duplicate.
+- If an existing memory is still right, `uac_verify({ids})`. If it's wrong, use `uac_update({id, body, anchors, reason, evidence})` or retire it with `uac_update({id, status:"superseded", reason})`. Don't propose a duplicate (it is refused anyway, with the id to update).
 
 ## 4. Report
 Give one short list: the count by type, the ids created, and anything uncertain that the user should confirm. If anything is below 0.7, suggest `/universal-agent-context:uac review`.

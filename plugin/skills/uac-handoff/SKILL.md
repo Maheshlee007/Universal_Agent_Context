@@ -9,15 +9,11 @@ Handoff = "continue from this session somewhere else". The receiving session loa
 
 ## Steps
 
-1. **Checkpoint the real state.** `uac_checkpoint({goal, working, broken, files, next_steps, note})`.
-   - `working`: done and verified. `broken`: what fails now, with the exact symptom.
-   - `next_steps`: ordered, concrete, each doable on its own.
-   - `note`: what you'd tell the next dev: the gotcha, the current hypothesis, what not to retry. Quote identifiers verbatim.
-2. **Save the card.** Spawn `universal-agent-context:uac-compressor` (model haiku) with `session_id=<id>` (hosts without subagents: `uac_digest`, then follow its `how_to_save`), so the card and knowledge are current.
-3. **Mark it as next.** `uac_handoff({session_id})`. It returns the session number `n`.
+1. **Save the card.** Spawn `universal-agent-context:uac-compressor` (Agent tool, `model: "haiku"`, foreground) with the prompt the UAC header gives (it starts `session_id=<id>. Step 0: ToolSearch …`). Its reply must start with `UAC saved:`; if it doesn't, or the agent is unavailable, call `uac_digest` yourself and follow its `how_to_save`. The card is the handoff: its `working`, `broken`, `next_steps`, `note` and `gaps` must say exactly where things stand (hosts without subagents: `uac_digest` → `how_to_save`).
+2. **Mark it as next.** `uac_handoff({session_id})`. It returns the session ref `#n` (stable; the short id next to it works too).
 4. **Tell the user this, and nothing more:**
    ```
-   Handoff ready: session #<n>
+   Handoff ready: session #<n> (<short id>)
    A new session in this project will load it automatically.
    In an already-open session (any host), type:  #uac continue <n>
    ```

@@ -33,27 +33,30 @@ Each memory line looks like:
 - `symbol@file:line` is the **anchor**: where the claim lives in code. Grep the symbol to check it fast.
 - **✓** verified against the code at or after the last change. Usable.
 - **⚠ changed N commits since recorded, verify**: the anchored file changed. **Open the anchor and check before relying on it.**
-- **✗ anchored file/symbol not found**: likely moved or wrong. Find where it went, or treat it as false.
+- **✗ anchor gone**: the anchored file or symbol is gone. Judge the memory only at its anchored path: a same-named file elsewhere is a DIFFERENT file (another copy), never evidence for or against it. Find where the code moved (`git log --follow`), or retire the memory.
 - After checking:
   - still true: `uac_verify({ids:[…]})` (bumps "verified", no new version)
   - partly wrong: `uac_update({id, body, reason, evidence, anchors})`
-  - wrong: `uac_invalidate({id, reason, superseded_by?})`
+  - wrong: `uac_update({id, status:"superseded", reason, superseded_by?})`
+  - a task you finished: `uac_update({id, status:"done", reason})`
 - **`(by <model>)`: memories written by another model (or an older session) are claims, not facts.** The code wins. Anchors + freshness make checking cheap, so check anything you're about to act on.
 - **Must not violate** constraints and requirements are binding. If a request would break one, say so before proceeding.
 
 ## 3. During work
 
-**Look things up** with progressive disclosure: `uac_search({query, type?, status?})` → `uac_get({ids})`. `uac_timeline({})` shows earlier sessions. `uac_why({id})` explains why an item was loaded.
+**Look things up** with progressive disclosure: `uac_search({query, type?, status?})` → `uac_get({ids})`. `uac_sessions({})` lists sessions with their stable `#n` and short ids; `uac_get({ids:["#3"], raw:true})` gives one session's exact history. The last line of the UAC header says what was NOT loaded and the exact call to load it.
 
 **Record durable knowledge** with `uac_propose({type, title, body, why, files, anchors, confidence})`:
 - decision (ADR: Context / Decision / Consequences), constraint, lesson (X failed because Y, fix Z), requirement, preference, warning, architecture.
 - Quote identifiers **verbatim** in backticks and set `anchors:[{file, symbol, line}]` for anything about code.
 - `confidence` ≥ 0.7 is accepted automatically; use < 0.7 for anything inferred.
 - Brainstorms are type `idea`, never `fact` or `decision`. Deferred features are a `decision` with `review_when` (see `uac-yagni`).
+- A preference says where it applies and where it does not. It is for all your projects unless you pass `scope:"project"`.
+- A near-duplicate is refused with the id to update instead: update that memory rather than adding another.
 
 **Cross-agent messages** reach other sessions of this project in any host (Claude, Codex, Gemini, Cursor…), including parallel branches:
-- **Send** with `uac_message({text, to})`, `to` = `all` | `branch:<name>` | `session:<id>`. Send one when you change something another session depends on: an interface, a shared type, a schema, a route, a config key, a file another branch is editing (see "Other active branches"). Name the verbatim identifiers: ``"Renamed `getUser(id)` → `fetchUser(id, opts)` in src/api/users.ts; update callers."``
-- **Read**: incoming messages are injected once as `[UAC] Message(s) from other sessions`. Act on them (adapt, or reply with `uac_message`). `uac_messages({})` lists them on demand.
+- **Send** with `uac_message({text, to})`, `to` = `all` | `branch:<name>` | `session:<#n or id>`. Send one when you change something another session depends on: an interface, a shared type, a schema, a route, a config key, a file another branch is editing (see "Other active branches"). Name the verbatim identifiers: ``"Renamed `getUser(id)` → `fetchUser(id, opts)` in src/api/users.ts; update callers."``
+- **Read**: incoming messages are injected once as `[UAC] Message(s) from other sessions`. Act on them (adapt, or reply with `uac_message`). `uac_message({})` with no text lists unread ones.
 
 **Inline controls** (`#uac on|off|pause|resume|save|stop|fresh|continue <n>|deep|import|msg <text>`) are applied by the hook before you see the prompt. Just acknowledge them.
 

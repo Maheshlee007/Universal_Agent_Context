@@ -4,14 +4,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import sea from 'node:sea';
 import { all, get, run, P, home } from './db.mjs';
 import * as S from './store.mjs';
 import * as K from './pack.mjs';
 
-// single-executable build embeds viewer.html as an asset; plain node reads it from disk
-const readHtml = () => sea.isSea() ? sea.getAsset('viewer.html', 'utf8')
-  : fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'viewer', 'viewer.html'));
+const readHtml = () => fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'viewer', 'viewer.html'));
 
 const withFresh = (pid, rows) => {
   const pr = S.project(pid);
@@ -20,13 +17,11 @@ const withFresh = (pid, rows) => {
 };
 
 function health(pid) {
-  const r = all('SELECT tokens FROM retrievals WHERE project_id = ?', pid);
   const sums = get('SELECT COALESCE(SUM(raw_chars),0) AS raw, COALESCE(SUM(LENGTH(body)),0) AS packed FROM summaries WHERE project_id = ?', pid);
   return {
     counts: S.counts(pid),
     sessions: get('SELECT COUNT(*) AS n FROM sessions WHERE project_id = ?', pid).n,
     events: get('SELECT COUNT(*) AS n FROM events e JOIN sessions s ON s.id = e.session_id WHERE s.project_id = ?', pid).n,
-    avg_pack_tokens: r.length ? Math.round(r.reduce((a, x) => a + x.tokens, 0) / r.length) : 0,
     raw_chars: sums.raw, pack_chars: sums.packed, db: path.join(home(), 'uac.db'),
   };
 }
@@ -51,13 +46,9 @@ const routes = [
   ['PUT', /^\/api\/sessions\/([^/]+)\/capture$/, (q, b, id) => { S.setCapture(id, b.state); return { ok: true }; }],
   ['GET', /^\/api\/sessions\/([^/]+)$/, (q, b, id) => S.sessionDetail(id) || notFound()],
   ['DELETE', /^\/api\/sessions\/([^/]+)$/, (q, b, id) => ({ ok: true, deleted: S.deleteSession(id) })],
-  ['GET', /^\/api\/next$/, (q) => ({ sessions: S.nextSessions(q.project), pack: S.nextPack(q.project) })],
-  ['PUT', /^\/api\/next$/, (q, b) => {
-    if (b.pack !== undefined) S.setNextPack(q.project, b.pack || null);
-    return { sessions: b.sessions ? S.setNextSessions(q.project, S.resolveSessionRefs(q.project, b.sessions)) : S.nextSessions(q.project), pack: S.nextPack(q.project) };
-  }],
+  ['GET', /^\/api\/next$/, (q) => ({ sessions: S.nextSessions(q.project) })],
+  ['PUT', /^\/api\/next$/, (q, b) => ({ sessions: b.sessions ? S.setNextSessions(q.project, S.resolveSessionRefs(q.project, b.sessions)) : S.nextSessions(q.project) })],
   ['GET', /^\/api\/memories$/, (q) => {
-    if (q.auto) return withFresh(q.project, S.recentlyAutoAccepted(q.project));
     const rows = q.q ? S.search(q.project, q.q, { type: q.type || undefined, status: q.status || undefined, limit: 200 })
       : all(`SELECT * FROM memories WHERE (project_id = ? OR project_id IS NULL) ${q.status ? 'AND status = ?' : ''} ${q.type ? 'AND type = ?' : ''}
           ORDER BY pinned DESC, updated_at DESC LIMIT 500`, ...[q.project, q.status, q.type].filter(Boolean)).map(S.hydrate);
@@ -77,22 +68,8 @@ const routes = [
   ['DELETE', /^\/api\/memories\/([^/]+)$/, (q, b, id) => { after(S.deleteMemory(id)); return { ok: true }; }],
   ['GET', /^\/api\/review$/, (q) => S.review(q.project)],
   ['GET', /^\/api\/messages$/, (q) => S.listMessages(q.project)],
+  ['DELETE', /^\/api\/messages\/([^/]+)$/, (q, b, id) => ({ ok: S.deleteMessage(id) })],
   ['POST', /^\/api\/messages$/, (q, b) => { const pr = S.project(q.project) || notFound(); return S.postMessage(null, pr, b.text, b.to || 'all'); }],
-  ['GET', /^\/api\/checkpoints$/, (q) => all('SELECT * FROM checkpoints WHERE project_id = ? ORDER BY ts DESC LIMIT 200', q.project)
-    .map((c) => ({ ...c, files: P(c.files, []), next_steps: P(c.next_steps, []) }))],
-  ['GET', /^\/api\/summaries$/, (q) => all('SELECT * FROM summaries WHERE project_id = ? ORDER BY created_at DESC LIMIT 200', q.project)],
-  ['GET', /^\/api\/packs$/, (q) => K.listPacks(q.project)],
-  ['POST', /^\/api\/packs$/, (q, b) => {
-    if (!Array.isArray(b.ids) || !b.ids.length) throw new Error('ids required');
-    return K.createPack(S.project(q.project), null, b);
-  }],
-  ['DELETE', /^\/api\/packs\/([^/]+)$/, (q, b, id) => {
-    const k = get('SELECT project_id FROM packs WHERE id = ?', id);
-    if (k && S.nextPack(k.project_id) === id) S.setNextPack(k.project_id, null);
-    run('DELETE FROM packs WHERE id = ?', id); return { ok: true };
-  }],
-  ['GET', /^\/api\/retrievals$/, (q) => all('SELECT * FROM retrievals WHERE project_id = ? ORDER BY id DESC LIMIT 100', q.project)
-    .map((r) => ({ ...r, item_ids: P(r.item_ids, []), reasons: P(r.reasons, {}) }))],
   ['GET', /^\/api\/health$/, (q) => health(q.project)],
   ['GET', /^\/api\/settings$/, (q) => ({ mode: S.project(q.project)?.mode ?? null })],
   ['PUT', /^\/api\/settings$/, (q, b) => { S.setMode(q.project, b.mode); return { mode: b.mode }; }],
