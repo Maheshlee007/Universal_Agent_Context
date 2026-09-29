@@ -514,3 +514,16 @@ test('v0.5: stable #n + refs, save validation, project scoping, non-git subfolde
   assert.equal(S.memory(origId).body, 'The login form posts JSON to /api/login', 'project memory untouched on the branch');
   g('checkout', '-q', 'main');
 });
+
+test('large session digest keeps every user request (tool noise dropped first)', () => {
+  S.ensureSession({ host: 'claude', session_id: 'sess-big', cwd: repo });
+  for (let i = 0; i < 300; i++) {
+    S.addEvent(S.session('sess-big'), 'prompt', { body: `request number ${i} please` });
+    S.addEvent(S.session('sess-big'), 'tool', { tool: 'Read', target: `src/f${i}.js` });
+    S.addEvent(S.session('sess-big'), 'assistant', { body: 'x'.repeat(700) });
+  }
+  const d = K.digest(S.session('sess-big'), 60000);
+  assert.ok(d.events.length < 64000, `digest bounded: ${d.events.length}`);
+  for (const i of [0, 150, 299]) assert.match(d.events, new RegExp(`request number ${i} please`));
+  assert.doesNotMatch(d.events, /tool Read src\/f150\.js/);
+});

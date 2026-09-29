@@ -205,6 +205,9 @@ Source: [PLAN-v5.md](PLAN-v5.md). Code paths are relative to `plugin/src/`.
 | C Merge "merge" into "rollup" | ❌ declined | The user asked for both |
 | C Remove the brainstorm and YAGNI skills | ❌ declined | The user asked for both |
 
+| v0.5.1 Large-session digest keeps every user request | ✅ | `digest` in `plugin/src/pack.mjs`, test "large session digest…" |
+| v0.5.1 Extension and Claude plugin rebuilt and installed | ✅ | VSIX 0.5.1 installed; plugin cache `0.5.1/` |
+
 ## 9. Not done, in one list
 - Cost meter (§14.13): the host session runs the compressor, so UAC can't see its price.
 - claude-mem / claude-remember / CLAUDE.md importers (§14.14): no demand yet.

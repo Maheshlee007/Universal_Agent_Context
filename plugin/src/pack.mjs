@@ -347,8 +347,16 @@ export function digest(s, maxChars = 60000) {
     else lines.push(`  ${e.kind}: ${clip(e.body, 300)}`);
   }
   let text = lines.join('\n');
-  // ponytail: keeps head + tail when over budget; map-reduce chunking if sessions routinely exceed it
-  if (text.length > maxChars) text = text.slice(0, maxChars * 0.3) + '\n  …[middle omitted]…\n' + text.slice(-maxChars * 0.7);
+  // Large session: plain tool calls go first (diff_stat still lists every changed file), then the middle, but every
+  // user request survives (clipped), because the goals and decisions live there.
+  // ponytail: head + requests + tail; map-reduce chunking if sessions routinely exceed even that
+  if (text.length > maxChars) text = lines.filter((l) => !l.startsWith('  tool ')).join('\n');
+  if (text.length > maxChars) {
+    const head = text.slice(0, maxChars * 0.25), tail = text.slice(-maxChars * 0.55);
+    const asks = text.slice(head.length, text.length - tail.length).split('\n').filter((l) => l.startsWith('USER: ')).map((l) => clip(l, 240));
+    const mid = asks.join('\n').slice(-maxChars * 0.2);
+    text = `${head}\n  …[middle: replies and tool results omitted; the user requests below are kept]…\n${mid}\n  …\n${tail}`;
+  }
   const goal = evs.find((e) => e.kind === 'prompt')?.body || '';
   const d = diffSince(p, s);
   const touched = new Set([...d.files, ...evs.map((e) => e.target).filter(Boolean)].map((f) => String(f).replace(/\\/g, '/')));

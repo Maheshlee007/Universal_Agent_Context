@@ -1,6 +1,6 @@
 {
   "name": "universal-agent-context",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Universal Agent Context (UAC): opt-in session memory, compression via in-session subagent, reviewable project knowledge, context packs for parallel sessions. Local SQLite, works across Claude Code, Codex, Gemini, Antigravity, Cursor, Copilot.",
   "author": {
     "name": "UAC contributors"

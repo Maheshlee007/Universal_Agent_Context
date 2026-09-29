@@ -69,7 +69,7 @@ Hosts without SessionStart (Antigravity) get it on the first prompt the same way
 ### Save (replaces events)
 ```
 #uac save | Stop block | /uac save ─► model spawns uac-compressor (other hosts: inline) ─► uac_digest
-   digest: unsaved events (head+tail if >60K chars), git diff --stat since start_commit (+ untracked),
+   digest: unsaved events (over 60K chars: tool lines dropped, then head + every user request + tail), git diff --stat since start_commit (+ untracked),
            recheck = memories anchored to touched files, existing-memory index
 ─► compressor reconciles ─► uac_save {summary, checkpoint, candidates[op add|update|supersede|conflict|verify|noop], model}
    · the auto card is replaced by the LLM card; the session title becomes the card title
@@ -160,13 +160,17 @@ Full reasoning, including what was declined: [PLAN-v5.md](PLAN-v5.md).
 - **Removed.** MCP tools went from 19 to 13: `uac_pack` and packs, v0.2 tiers and `uac choose`, `uac_why` and the retrieval log, `uac_checkpoint`. `uac_timeline` became `uac_sessions`; `uac_invalidate` folded into `uac_update` (status `superseded`), `uac_resolve` into `uac_review {resolve}`, `uac_messages` into `uac_message` (no text = read). Also removed: the dashboard's "Advanced" section and "Recently auto-accepted" (replaced by a "new" pill), the single-executable build (`scripts/build-sea.mjs`), dead helpers.
 - **`.context/PROJECT.md`** now also carries the last 3 LLM session cards, so a clone or a lost `~/.uac` still has them.
 
+## v0.5.1 changes
+- **Large-session digest** (`digest`, `pack.mjs`): see Known limitations 6. Regression test: "large session digest keeps every user request".
+- Version bump so the Claude plugin cache (`~/.claude/plugins/cache/uac/universal-agent-context/0.5.1/`) and the VS Code extension carry every v0.5 fix; the 0.5.0 cache was copied before the last fixes landed.
+
 ## Known limitations
 1. **Gemini live test blocked:** headless `gemini -p` hangs on this machine even with UAC's hooks removed. The install and the adapter are unit-tested only.
 2. **Codex isn't installed** here, so the Codex adapter is unit-tested only (and new hooks must be trusted with `/hooks` in Codex).
 3. **Cursor and Copilot prompt hooks can't inject text.** The start context comes from their `sessionStart`; `#uac` controls are applied, but their replies aren't shown.
 4. **Antigravity's PreInvocation** carries no prompt text, so its prompts aren't captured (tool events are).
 5. **SessionEnd in `claude -p`** is often cancelled because the process exits first. It's harmless: the next start builds the auto card.
-6. **Very long sessions:** the digest keeps head + tail over 60K characters. Map-reduce over chunks is the upgrade path.
+6. **Very long sessions:** over 60K characters the digest drops plain tool lines first (`diff_stat` still lists every changed file), then keeps the head, every user request (clipped) and the tail. Replies and tool results in the middle are lost; map-reduce over chunks is the upgrade path.
 7. **Not built:** the scored recall@k benchmark, importers for claude-mem / claude-remember / CLAUDE.md, a cost meter, and the `.uac/policy.yml` files from PLAN-v2 §16.
 8. **Host transcripts** can be deleted by the host. The raw log then falls back to the last 10 turns UAC keeps after a save.
 9. **Reload:** a plugin can't run `/reload-plugins`; running sessions keep the old version until the user types it or restarts.
