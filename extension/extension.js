@@ -387,9 +387,12 @@ async function reinstallIfUpdated(context) {
   let r;
   try { r = await uac(['install']); context.globalState.update('uac.installedVersion', now); } catch { return; /* keep old paths; user can run UAC: Install */ }
   if (r?.claude?.kept) return; // a same-or-newer UAC was already registered for Claude Code: nothing changed there, no reload needed
-  // running Claude Code sessions keep the old hooks/MCP server until reloaded: offer it instead of leaving them stale
-  const a = await vscode.window.showInformationMessage(`UAC updated to ${now}. Reload the window so open Claude Code sessions use it (or type /reload-plugins in each).`, 'Reload Window');
-  if (a) vscode.commands.executeCommand('workbench.action.reloadWindow');
+  // Claude Code sessions in this window may have started before the plugin update landed and keep the old hooks/MCP server:
+  // reload once, automatically (this runs right after VS Code's own update reload, so nothing is lost), unless cancelled
+  const cancelled = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `UAC updated to ${now}: reloading the window so Claude Code uses it`, cancellable: true },
+    (_, token) => new Promise((done) => { const t = setTimeout(() => done(false), 4000); token.onCancellationRequested(() => { clearTimeout(t); done(true); }); }));
+  if (cancelled) vscode.window.showInformationMessage('UAC: reload later (Reload Window, or /reload-plugins in each Claude Code session) to use the new version.');
+  else vscode.commands.executeCommand('workbench.action.reloadWindow');
 }
 
 // ---------- lifecycle ----------
