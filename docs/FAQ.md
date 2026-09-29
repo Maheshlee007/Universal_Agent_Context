@@ -91,7 +91,7 @@ You pick **sessions**.
 Yes, it is replaced. No, you do not save again.
 - A successful save writes the card, then deletes UAC's copy of that session's raw events, except the last 10 prompt/reply turns. Those are kept as a fallback raw log and are never injected.
 - The card and the knowledge stay. The old checkpoints this session loaded on the same branch are marked superseded by the new card.
-- If you keep working in the same session, the next save updates the same card.
+- If you keep working in the same session, the next save adds a new **chapter** (v0.6). Earlier chapters stay as they are.
 
 ### Why can a save be refused?
 Because a bad save would delete the raw events and leave nothing useful. `uac_save` refuses, and writes and deletes **nothing**, when:
@@ -154,7 +154,8 @@ Deleting a session removes its events, its card (summaries and checkpoints), its
 
 ### I saved, then kept working in the same session. Is the new work added?
 Yes. It's the same session.
-- The next save gets the existing card (`previous_card`) and writes ONE updated card for the whole session.
+- The next save writes a new **chapter** about the new work only. Open next steps carry forward automatically, marked `(open since chN)`, until a chapter closes them.
+- The next session loads the latest chapter in full, plus one line per earlier chapter (title, time, files). `uac_get {ids:["s-…"]}` opens one.
 - Until then, work after the card shows as an "**After this card (unsaved)**" tail in other sessions' start context.
 - If the host compacts the conversation, this session's own card and that tail are re-injected.
 

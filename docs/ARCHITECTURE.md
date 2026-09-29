@@ -167,13 +167,25 @@ Full reasoning, including what was declined: [PLAN-v5.md](PLAN-v5.md).
 ## v0.5.2 changes
 - **Invented anchor symbols are dropped at write time** (`fixAnchors`, `store.mjs`; used by `save`, `uac_propose`, `uac_update`). The final live run showed Haiku quoting symbols that are not in the file (e.g. `computeAnchorFreshness`); stored as is, every later reader saw "✗ symbol gone". Now the file anchor is kept, the symbol is dropped and the save returns a warning. Test: "invented anchor symbol is dropped".
 
+## v0.6.0 changes
+Full write-up and verification: [REPORT-v0.6.md](REPORT-v0.6.md). Design: [superpowers/specs/2026-09-30-chapters-design.md](superpowers/specs/2026-09-30-chapters-design.md).
+- **Chapters.**
+  - Every LLM save is a permanent chapter, a `summaries` row with `checkpoint_id` and `from_ts`, about only its own events.
+  - `card()` is the latest chapter plus its checkpoint, and `chapters(sessionId)` lists them all.
+  - The digest pages at `max_chars` (`more`) and sends numbered `open_items`. `save()` carries every open item not listed in `checkpoint.closed`.
+  - `fmtCard` renders `chapter N/N`, the session goal and an index of earlier chapters. `uac_get` opens `s-` ids.
+- **Monorepo packages.**
+  - `packagesOf(root)` reads npm/pnpm/yarn workspaces and lerna. When the root has no manifest, 2 or more folders that each have one count as packages.
+  - `sessions.area` comes from the cwd. A memory's package comes from its anchors (`areaOfFiles`).
+  - `bootstrap` scopes a session started inside a package to its own and repo-wide items, and tags items at the root with `[in <package>]`.
+
 ## Known limitations
 1. **Gemini live test blocked:** headless `gemini -p` hangs on this machine even with UAC's hooks removed. The install and the adapter are unit-tested only.
 2. **Codex isn't installed** here, so the Codex adapter is unit-tested only (and new hooks must be trusted with `/hooks` in Codex).
 3. **Cursor and Copilot prompt hooks can't inject text.** The start context comes from their `sessionStart`; `#uac` controls are applied, but their replies aren't shown.
 4. **Antigravity's PreInvocation** carries no prompt text, so its prompts aren't captured (tool events are).
 5. **SessionEnd in `claude -p`** is often cancelled because the process exits first. It's harmless: the next start builds the auto card.
-6. **Very long sessions:** over 60K characters the digest drops plain tool lines first (`diff_stat` still lists every changed file), then keeps the head, every user request (clipped) and the tail. Replies and tool results in the middle are lost; map-reduce over chunks is the upgrade path.
+6. **Very long sessions:** handled by chapters (v0.6). The digest pages instead of cutting, and a raw transcript slice per chapter is deferred.
 7. **Not built:** the scored recall@k benchmark, importers for claude-mem / claude-remember / CLAUDE.md, a cost meter, and the `.uac/policy.yml` files from PLAN-v2 §16.
 8. **Host transcripts** can be deleted by the host. The raw log then falls back to the last 10 turns UAC keeps after a save.
 9. **Reload:** a plugin can't run `/reload-plugins`; running sessions keep the old version until the user types it or restarts.

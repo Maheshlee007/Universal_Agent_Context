@@ -9,6 +9,8 @@ UAC gives coding agents memory across sessions, branches and tools: Claude Code,
 
 ## What UAC does
 - Records each session through the host's hooks and turns it into a short **session card**: what was done, what works, what is broken, next steps, files.
+- A long session is never squeezed into one card: every save is a permanent **chapter**. The next session gets the latest chapter plus a one-line index of the earlier ones, and open next steps carry forward until a chapter closes them.
+- **Monorepos** (workspaces, Turborepo, Nx, lerna, or Backend/ + Frontend/): each session and knowledge item knows its package. A session started in `apps/web` gets that package's context plus repo-wide items, not another package's.
 - Keeps **project knowledge**: decisions (with the why), constraints, warnings, lessons, facts, open tasks. Each item is anchored to code (`computeRowPlan@src/layout.js:42`) and marked ✓ / ⚠ / ✗.
 - Injects the latest card and the knowledge into every new session, about 2K tokens. No tool call and no question at start.
 - Says in one line what it loaded, what it left out, and the exact call to get more.
@@ -164,6 +166,12 @@ The hook already injects the start context. Agents use these tools for more:
 | `uac_handoff` | The next session (any tool or branch) continues from this one |
 | `uac_digest` | Compressor only: what to save, the git diff, memories to re-check, `how_to_save` |
 | `uac_save` | Compressor only: write the card and the knowledge in one call |
+
+## Chapters (long sessions)
+- Each save writes a chapter about only the work since the last save. Earlier chapters are never rewritten.
+- The start context shows `chapter N/N`, the session goal, the latest chapter in full, and `Earlier chapters` lines (`s-id · time · "title" · files`).
+- `uac_get {ids:["s-…"]}` opens one chapter, and `uac_get {ids:["#7"]}` lists every chapter of session #7.
+- Open next steps are carried by UAC itself, marked `(open since chN)`. The compressor closes them by number, so none silently disappears.
 
 ## Session numbers
 - Every session gets a number (`#7`) the first time you type a real prompt in it. The number never changes, and it is per project.

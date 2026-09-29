@@ -209,6 +209,9 @@ Source: [PLAN-v5.md](PLAN-v5.md). Code paths are relative to `plugin/src/`.
 | Extension and Claude plugin rebuilt and installed | ✅ | VSIX 0.5.2 installed; plugin cache `0.5.2/` |
 | v0.5.2 Invented anchor symbols dropped at write time | ✅ | `fixAnchors` in `plugin/src/store.mjs`; test "invented anchor symbol…" |
 | v0.5.2 Final live scenario (5 `claude -p` sessions, create-webstack-app) incl. promote-on-merge | ✅ | `D:/uac-e2e5/scenario.sh`, run 2026-09-29 |
+| v0.6.0 Session chapters (a save no longer replaces the card; open items carried by code; digest pages) | ✅ | `save`/`digest`/`fmtCard` in `pack.mjs`, `chapters` in `store.mjs`; test "chapters…" |
+| v0.6.0 Monorepo packages (session and memory package; scoped start context) | ✅ | `packagesOf`/`areaOf` in `store.mjs`; test "monorepo…" |
+| v0.6 prep: inline-save cost text, "compaction is not a save", PROJECT.md `#?` | ✅ | `saveInstruction`, `startContext`, `exportProjectMd` |
 
 ## 9. Not done, in one list
 - Cost meter (§14.13): the host session runs the compressor, so UAC can't see its price.
