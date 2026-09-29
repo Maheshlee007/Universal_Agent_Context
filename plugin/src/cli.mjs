@@ -30,7 +30,7 @@ usage: uac <command> [options] [--json] [--cwd DIR]
   review                         decide low-confidence proposals & conflicts (interactive: y/n/e/s)
   edit <id> | forget <id…>       edit a memory in $EDITOR / hard-delete memories
   import [n|id]                  recover an unrecorded session from its host transcript
-  msg "<text>" [--to all|branch:<b>|session:<id>]    msgs    cross-agent notes
+  msg "<text>" [--to all|branch:<b>|session:<id>|package:<p>|project:<name>]    msgs    cross-agent notes
   projects | projects merge <from> <into> | projects rm <id>
   view [--port N] [--no-open]    dashboard            export   regenerate .context/PROJECT.md
   install [host] [--dry-run]     no host = detect installed tools (${HOSTS.join(', ')}, VS Code)

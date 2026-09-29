@@ -593,11 +593,63 @@ test('monorepo: sessions and knowledge carry their package; a session inside a p
   assert.match(b.text, /Web entry is webMain/);
   assert.match(b.text, /Readme is the monorepo overview/);
   assert.doesNotMatch(b.text, /Api entry/);
-  assert.match(b.loaded, /1 knowledge items about other packages/);
+  assert.match(b.loaded, /1 knowledge items about other packages[^\n]*Wider: uac_bootstrap\{area:""\}/);
   // no workspace config and no root manifest: folders with their own manifest are the packages (Backend/ + Frontend/)
   const bf = path.join(tmp, 'bf');
   for (const d of ['Backend', 'Frontend']) { fs.mkdirSync(path.join(bf, d), { recursive: true }); fs.writeFileSync(path.join(bf, d, 'package.json'), '{}'); }
   assert.deepEqual([...S.packagesOf(bf)].sort(), ['Backend', 'Frontend']);
   assert.equal(S.areaOf(bf, path.join(bf, 'Frontend', 'src', 'x.tsx')), 'Frontend');
   assert.deepEqual(S.packagesOf(repo), [], 'a plain repo has no packages');
+});
+
+test('fe/ + be/ in one folder: area chosen by the LLM, package messages, sibling-project messages, restated open item deduped', () => {
+  // one repo, fe/ and be/ each with a manifest, none at the root
+  const fb = path.join(tmp, 'fb');
+  for (const d of ['fe', 'be']) { fs.mkdirSync(path.join(fb, d), { recursive: true }); fs.writeFileSync(path.join(fb, d, 'package.json'), '{}'); }
+  const gf = (...a) => spawnSync('git', a, { cwd: fb, encoding: 'utf8' });
+  gf('init', '-q', '-b', 'main'); gf('config', 'user.email', 't@t'); gf('config', 'user.name', 't'); gf('add', '.'); gf('commit', '-qm', 'init');
+  const p = S.projectFor(fb);
+  const rootS = S.ensureSession({ host: 'claude', session_id: 'fb-root', cwd: fb }).s;
+  const t0 = K.bootstrap(rootS, p, { record: false }).text;
+  assert.match(t0, /Packages in this repo: `(fe|be)`, `(fe|be)`[^\n]*uac_bootstrap\{area:/);
+  // the LLM at the root says it works in fe only
+  const t1 = K.bootstrap(S.session('fb-root'), p, { area: 'fe', record: false }).text;
+  assert.equal(S.session('fb-root').area, 'fe');
+  assert.match(t1, /package `fe`/);
+  assert.match(t1, /Other packages: `be`: uac_message\{to:"package:<name>"/);
+  assert.throws(() => K.bootstrap(S.session('fb-root'), p, { area: 'nope', record: false }), /no package "nope"[^\n]*packages: /);
+  // be's session tells whoever works in fe; a second be session does not get it
+  const beS = S.ensureSession({ host: 'claude', session_id: 'fb-be', cwd: path.join(fb, 'be') }).s;
+  const beS2 = S.ensureSession({ host: 'claude', session_id: 'fb-be2', cwd: path.join(fb, 'be') }).s;
+  S.postMessage(beS, p, 'API is GET /api/todos', 'package:fe');
+  assert.ok(S.unreadMessages(S.session('fb-root')).some((m) => /api\/todos/.test(m.text)), 'the fe session gets it');
+  assert.ok(!S.unreadMessages(beS2).length, 'another be session does not');
+  assert.throws(() => S.postMessage(beS, p, 'x', 'package:web'), /no package "web"/);
+  // separate repos side by side: each keeps its own context; project:<name> reaches the other one's inbox
+  const par = path.join(tmp, 'par');
+  for (const r of ['r1', 'r2']) {
+    fs.mkdirSync(path.join(par, r), { recursive: true });
+    const gr = (...a) => spawnSync('git', a, { cwd: path.join(par, r), encoding: 'utf8' });
+    gr('init', '-q', '-b', 'main'); fs.writeFileSync(path.join(par, r, 'f.txt'), r); gr('add', '.'); gr('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'i');
+  }
+  const p1 = S.projectFor(path.join(par, 'r1')), p2 = S.projectFor(path.join(par, 'r2'));
+  assert.notEqual(p1.id, p2.id);
+  const s1 = S.ensureSession({ host: 'claude', session_id: 'par-r1', cwd: path.join(par, 'r1') }).s;
+  const s2 = S.ensureSession({ host: 'claude', session_id: 'par-r2', cwd: path.join(par, 'r2') }).s;
+  assert.doesNotMatch(K.bootstrap(s1, p1, { record: false }).text, /Related projects/, 'plain siblings are not advertised');
+  S.postMessage(s1, p1, 'schema changed', 'project:r2');
+  const got = S.unreadMessages(S.session('par-r2'));
+  assert.equal(got.length, 1);
+  assert.equal(got[0].from_project, 'r1');
+  S.projectFor(par); // someone works at the parent: now it is a workspace, and the siblings are listed
+  assert.match(K.bootstrap(S.session('par-r1'), p1, { record: false }).text, /Related projects \(each keeps its own context\): [^\n]*`r2`/);
+  // restated open item stays one item
+  const sid = 'fb-root';
+  S.addEvent(S.session(sid), 'prompt', { body: 'p' });
+  let d = K.digest(S.session(sid));
+  K.save(S.session(sid), p, { base_event_id: d.base_event_id, upto_event_id: d.upto_event_id, summary: { title: 'c1', body: 'b' }, checkpoint: { goal: 'g', next_steps: ['Write test for GET /api/health endpoint'], note: 'n' } });
+  S.addEvent(S.session(sid), 'prompt', { body: 'q' });
+  d = K.digest(S.session(sid));
+  K.save(S.session(sid), p, { base_event_id: d.base_event_id, upto_event_id: d.upto_event_id, summary: { title: 'c2', body: 'b' }, checkpoint: { goal: 'g', next_steps: ['Write test for /api/health endpoint (Backend)'], note: 'n' } });
+  assert.deepEqual(S.card(sid).next_steps, ['Write test for GET /api/health endpoint (open since ch1)']);
 });

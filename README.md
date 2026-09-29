@@ -10,7 +10,11 @@ UAC gives coding agents memory across sessions, branches and tools: Claude Code,
 ## What UAC does
 - Records each session through the host's hooks and turns it into a short **session card**: what was done, what works, what is broken, next steps, files.
 - A long session is never squeezed into one card: every save is a permanent **chapter**. The next session gets the latest chapter plus a one-line index of the earlier ones, and open next steps carry forward until a chapter closes them.
-- **Monorepos** (workspaces, Turborepo, Nx, lerna, or Backend/ + Frontend/): each session and knowledge item knows its package. A session started in `apps/web` gets that package's context plus repo-wide items, not another package's.
+- **fe/ + be/ and monorepos** (workspaces, Turborepo, Nx, lerna, or plain `fe/` + `be/` folders): each session and knowledge item knows its package.
+  - A session started in `fe/`, or one that says `uac_bootstrap{area:"fe"}` after starting at the root, gets fe's context plus repo-wide items.
+  - A session that works on both keeps the whole repo, with items tagged `[in fe]` / `[in be]`.
+  - The fe and be sessions talk with `uac_message{to:"package:be"}`.
+  - Separate repos side by side are separate projects, and `to:"project:be"` reaches them.
 - Keeps **project knowledge**: decisions (with the why), constraints, warnings, lessons, facts, open tasks. Each item is anchored to code (`computeRowPlan@src/layout.js:42`) and marked ✓ / ⚠ / ✗.
 - Injects the latest card and the knowledge into every new session, about 2K tokens. No tool call and no question at start.
 - Says in one line what it loaded, what it left out, and the exact call to get more.
@@ -113,7 +117,7 @@ Type these at the **start of a line**. In Claude Code, write `uac: save` instead
 | `#uac deep` | More knowledge (~6K tokens) |
 | `#uac name Users pagination` | Name this session (it is named from your first real prompt anyway) |
 | `#uac rollup` / `#uac rollup 2 3` | Roll all sessions on this branch (or #2 and #3) into one card |
-| `#uac msg to branch:main <text>` | Note for other sessions (`to all`, `branch:<b>` or `session:<n>`) |
+| `#uac msg to branch:main <text>` | Note for other sessions (`to all`, `branch:<b>`, `session:<n>`, `package:<fe>` or `project:<be>`) |
 | `#uac import` | This session wasn't recorded: rebuild it from the host transcript |
 
 In Claude Code the same actions exist as `/universal-agent-context:uac <action>`, plus `handoff`, `init` (survey the codebase into knowledge), `refresh` (re-check ⚠/✗ items) and `review`.

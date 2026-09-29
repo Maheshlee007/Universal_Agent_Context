@@ -46,7 +46,8 @@ Memory lines look like `- **Title**: body · \`computeRowPlan@src/layout.js:42\`
 - **Close a finished task:** `uac_update({id, status:"done", reason})`.
 - **Review:** `uac_review({})` lists items that need a human. After the user decides: `uac_review({resolve:[{id, action:"accept"|"reject", body?}]})`.
 - **Messages across agents and branches:**
-  - Send `uac_message({text, to})`, `to` = `all` | `branch:<name>` | `session:<ref>`, when you change something another session depends on (an interface, shared type, schema, route, config key, or a file listed under "Other active branches"). Name the verbatim identifiers.
+  - Several packages in one repo (`fe/` + `be/`, workspaces): if you work in only one, call `uac_bootstrap({area:"<package>"})` once.
+  - Send `uac_message({text, to})`, where `to` is `all`, `branch:<name>`, `session:<ref>`, `package:<name>` (the session working in that package) or `project:<name>` (a project next to this one), when you change something another session depends on (an interface, shared type, schema, route, config key, or a file listed under "Other active branches"). Name the verbatim identifiers.
   - Incoming messages arrive once, in the start context or as `[UAC] Message(s) from other sessions` at a prompt. Act on them. `uac_message({})` without text reads your unread ones.
 - **Inline controls** typed by the user (`#uac on|off|pause|resume|save [n]|stop|fresh|continue <n>|deep|name <title>|rollup|import|msg <text>`, or `uac: …`) are applied by the hook. Just acknowledge them.
 

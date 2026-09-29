@@ -57,10 +57,10 @@ function control(s, p, cmd, rest) {
       return `[UAC] Imported ${r.events_imported} events from this session's transcript; recording is on now.`;
     }
     case 'msg': {
-      const m = /^\s*(?:to\s+(all|branch:\S+|session:\S+)\s+)?([\s\S]+)$/i.exec(rest);
+      const m = /^\s*(?:to\s+(all|branch:\S+|session:\S+|package:\S+|project:\S+)\s+)?([\s\S]+)$/i.exec(rest);
       if (!m?.[2]?.trim()) return '[UAC] Usage: #uac msg [to branch:<name>] <text>';
       S.postMessage(s, p, m[2].trim(), m[1] || 'all');
-      return `[UAC] Message posted to ${m[1] || 'all'} sessions of this project.`;
+      return `[UAC] Message posted to ${m[1] || 'all'}.`;
     }
   }
   return null;

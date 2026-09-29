@@ -115,7 +115,15 @@ export function bootstrap(s, p, opts = {}) {
   //    unsaved work in another window), not only the last saved one
   let defaulted = false;
   // monorepo: a session started inside a package continues that package's work (or repo-wide work), not another package's
-  const here = s ? S.session(s.id)?.area ?? null : null;
+  let here = s ? S.session(s.id)?.area ?? null : null;
+  const pkgs = S.packagesOf(p.root);
+  if (opts.area !== undefined && s) { // the LLM says which package this session works in ("" = the whole repo)
+    const want = String(opts.area || '').replace(/\\/g, '/').replace(/\/$/, '');
+    const hit = want ? pkgs.find((x) => x === want) || pkgs.find((x) => x.split('/').pop() === want) : null;
+    if (want && !hit) throw new Error(`no package "${want}" in this repo; packages: ${pkgs.join(', ') || '(none: not a monorepo)'}`);
+    run('UPDATE sessions SET area = ? WHERE id = ?', hit, s.id);
+    here = hit;
+  }
   const areaOfSession = (x) => x.area ?? S.areaOfFiles(p.root, x.card?.files);
   if (!sessions.length && !freshStart) {
     const worked = (x) => x.card?.quality === 'llm' || !!get(`SELECT 1 AS y FROM events WHERE session_id = ? AND kind = 'tool' AND tool IN ('Edit','Write','MultiEdit','NotebookEdit','apply_patch','edit','write') LIMIT 1`, x.id);
@@ -180,7 +188,7 @@ export function bootstrap(s, p, opts = {}) {
 
   // 4. messages for this session/branch: rendered before the knowledge, so no budget or clip can drop one that is marked read
   const msgs = s && record ? S.unreadMessages(s) : [];
-  const from = (m) => { const x = m.from_session && byId.get(m.from_session); return `${m.from_agent}${x ? ` ${S.ref(x)}` : ''}${m.from_branch ? ` on \`${m.from_branch}\`` : ''}`; };
+  const from = (m) => { const x = m.from_session && byId.get(m.from_session); return `${m.from_agent}${m.from_project ? ` in project \`${m.from_project}\`` : ''}${x ? ` ${S.ref(x)}` : ''}${m.from_branch ? ` on \`${m.from_branch}\`` : ''}${m.recipient?.startsWith('package:') ? ` (to ${m.recipient})` : ''}`; };
 
   // assemble within budget: cards ≤45%, must-not-violate ≤15%, then knowledge
   let used = 0;
@@ -211,8 +219,13 @@ export function bootstrap(s, p, opts = {}) {
   if (!cards.length && knowledgeTokens < NEAR_EMPTY_TOKENS)
     out += `\n> UAC knows almost nothing about this project yet. To build project knowledge, run the uac-init-knowledge skill ("survey this codebase for UAC") or /universal-agent-context:uac init.\n`;
   if (cardTexts.length) out += `\n## Continuing from${defaulted ? ' (most recent session on this branch)' : ''}\n${cardTexts.join('\n\n')}\n`;
+  // where this session sits: packages of this repo, and projects next to it (each keeps its own context; messages reach them)
+  const rel = S.relatedProjects(p);
+  if (pkgs.length >= 2 && !here) out += `\nPackages in this repo: ${pkgs.map((x) => `\`${x}\``).join(', ')} (knowledge is tagged [in <package>]). Working in only one? uac_bootstrap{area:"${pkgs.at(-1)}"} loads just its context and files this session under it; otherwise this session keeps the whole repo. Reach the session working in another: uac_message{to:"package:<name>", text}.\n`;
+  else if (here && pkgs.length >= 2) out += `\nOther packages: ${pkgs.filter((x) => x !== here).map((x) => `\`${x}\``).join(', ')}: uac_message{to:"package:<name>", text} reaches the session working there; uac_bootstrap{area:""} for the whole repo.\n`;
+  if (rel.length) out += `\nRelated projects (each keeps its own context): ${rel.slice(0, 6).map((x) => `\`${x.name}\``).join(', ')}. Tell the session working there: uac_message{to:"project:<name>", text}.\n`;
   if (msgs.length) {
-    out += `\n## Messages for you (reply: uac_message {to:"session:<id>", text})\n${msgs.map((m) => `- from ${from(m)} (${ago(m.created_at)}): ${m.text}`).join('\n')}\n`;
+    out += `\n## Messages for you (reply: uac_message {to:"session:<id>", text}; from another project: to:"project:<name>")\n${msgs.map((m) => `- from ${from(m)} (${ago(m.created_at)}): ${m.text}`).join('\n')}\n`;
     // a session nobody typed in yet (a window reload) must not consume them: they are marked read at its first prompt
     if ((cur?.prompts || 0) > 0) S.markRead(s, msgs);
   }
@@ -233,6 +246,7 @@ export function bootstrap(s, p, opts = {}) {
   const notLoaded = numbered.filter((x) => x.id !== s?.id && !loadedIds.has(x.id) && (hasContent(x.card) || x.unsaved >= 3));
   const rawRef = loadedCards.find((x) => x.raw) || null;
   const wider = [omitted > 0 && `uac_bootstrap{depth:"deep"} (+${omitted} knowledge items)`, notLoaded.length && `uac_bootstrap{sessions:["${S.ref(notLoaded[0]).split(' ')[0]}"]}`,
+    otherPkg > 0 && `uac_bootstrap{area:""} (whole repo, +${otherPkg} items of other packages)`,
     rawRef && `uac_get{ids:["${S.ref(rawRef).split(' ')[0]}"], raw:true} (exact history)`].filter(Boolean);
   const loaded = `Loaded ~${used} tok: ${loadedCards.length ? loadedCards.map((x) => `card ${S.ref(x)}`).join(' + ') : 'no session card'} + ${mustTexts.length + knowTexts.length}/${items.length} knowledge items. ` +
     (notLoaded.length || omitted > 0 || otherPkg > 0
@@ -474,13 +488,16 @@ export function save(s, p, { base_event_id, upto_event_id, summary, checkpoint, 
   const bare = (t) => t.replace(/ \(open since ch\d+\)$/, '').trim().toLowerCase();
   const prevNo = prev?.chapter_no || (prev ? 1 : 0);
   const carried = prev?.quality === 'auto' ? [] : (prev?.next_steps || [])
-    .filter((t, i) => !closed.has(i + 1) && !fresh.some((f) => bare(f) === bare(t)))
+    .filter((t, i) => !closed.has(i + 1))
     .map((t) => (/ \(open since ch\d+\)$/.test(t) ? t : `${t} (open since ch${prevNo})`));
+  // a still-open item the model restated in its own words stays ONE item (the carried one, with its age)
+  const ws = (t) => new Set(bare(t).match(/[\p{L}\p{N}_]{3,}/gu) || []);
+  const newSteps = fresh.filter((f) => !carried.some((t) => S.jaccard(ws(f), ws(t)) >= 0.6));
   for (const n of closed) if (!(n >= 1 && n <= (prev?.next_steps?.length || 0))) res.warnings.push(`closed: ${n} is not an open item number (ignored)`);
   run('INSERT INTO summaries(id, session_id, project_id, title, body, raw_chars, created_at, quality, model, events_n, from_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
     res.summary, s.id, p.id, clip(summary.title, 200), summary.body || '', raw, now(), 'llm', model ?? null, range.n, range.t ?? now());
   run('UPDATE sessions SET title = ? WHERE id = ?', clip(summary.title, 120), s.id);
-  res.checkpoint = addCheckpoint(s, { ...checkpoint, next_steps: [...fresh, ...carried] }, 'save');
+  res.checkpoint = addCheckpoint(s, { ...checkpoint, next_steps: [...newSteps, ...carried] }, 'save');
   run('UPDATE summaries SET checkpoint_id = ? WHERE id = ?', res.checkpoint, res.summary);
   // the cards this session loaded from OTHER sessions on its branch are continued here (this session's own earlier
   // chapters stay whole: they are its history)

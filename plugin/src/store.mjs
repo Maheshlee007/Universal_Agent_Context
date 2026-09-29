@@ -334,16 +334,46 @@ export function setNextSessions(projectId, ids) {
 }
 
 // ---------- cross-agent messages ----------
+// Projects that sit together: siblings in the same parent folder (fe/ and be/ as separate repos), the ones directly inside
+// this one's folder (a window opened at the parent), and that parent. The only other projects a message may reach.
+// Siblings are listed only when their parent folder is itself a project (someone worked at the parent: a workspace), so a
+// plain folder of unrelated projects (D:\React\*) doesn't advertise them to each other; `anySibling` (an explicit
+// "project:<name>" message) accepts them anyway.
+export function relatedProjects(p, { anySibling = false } = {}) {
+  const norm = (r) => String(r || '').replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+  const me = norm(p.root), up = me.slice(0, me.lastIndexOf('/'));
+  const rows = all('SELECT id, name, root FROM projects WHERE id != ?', p.id);
+  const workspace = anySibling || rows.some((x) => norm(x.root) === up);
+  return rows.filter((x) => {
+    const r = norm(x.root), xUp = r.slice(0, r.lastIndexOf('/'));
+    return (workspace && xUp === up) || xUp === me || r === up;
+  });
+}
+
 export function postMessage(s, p, text, to = 'all') {
   if (!text?.trim()) throw new Error('empty message');
-  if (!/^(all|branch:.+|session:.+)$/.test(to)) throw new Error("to must be 'all', 'branch:<name>' or 'session:<id>'");
+  if (!/^(all|branch:.+|session:.+|package:.+|project:.+)$/.test(to)) throw new Error("to must be 'all', 'branch:<name>', 'session:<ref>', 'package:<name>' (a package of this repo) or 'project:<name>' (a project next to this one)");
+  let target = p.id, fromProject = null;
+  if (to.startsWith('package:')) { // the session(s) working in that package of this repo (and whole-repo sessions)
+    const want = to.slice(8).replace(/\\/g, '/').replace(/\/$/, ''), pkgs = packagesOf(p.root);
+    const hit = pkgs.find((x) => x === want) || pkgs.find((x) => x.split('/').pop() === want);
+    if (!hit) throw new Error(`no package "${want}" in this repo; packages: ${pkgs.join(', ') || '(none: not a monorepo)'}`);
+    to = `package:${hit}`;
+  }
+  if (to.startsWith('project:')) { // a related project keeps its own context: the message goes into ITS inbox
+    const want = to.slice(8), rel = relatedProjects(p, { anySibling: true });
+    const hit = rel.find((x) => x.id === want || x.name === want || String(x.root).replace(/\\/g, '/').split('/').pop() === want);
+    if (!hit) throw new Error(`no project "${want}" next to this one; related projects: ${rel.map((x) => x.name).join(', ') || '(none)'}`);
+    target = hit.id; to = 'all'; fromProject = p.name;
+  }
   if (to.startsWith('session:')) { // #n / short id → the full id the recipient is matched on
     const sid = resolveSessionRef(p.id, to.slice(8));
     if (!sid) throw new Error(sessionRefError(p.id, to.slice(8)));
     to = `session:${sid}`;
   }
   const id = uid('msg');
-  run('INSERT INTO messages VALUES (?,?,?,?,?,?,?,?)', id, p.id, s?.id ?? null, s?.agent ?? 'user', s?.branch ?? p.branch ?? null, to, clip(redact(text), 2000), now());
+  run('INSERT INTO messages(id, project_id, from_session, from_agent, from_branch, recipient, text, created_at, from_project) VALUES (?,?,?,?,?,?,?,?,?)',
+    id, target, s?.id ?? null, s?.agent ?? 'user', s?.branch ?? p.branch ?? null, to, clip(redact(text), 2000), now(), fromProject);
   return get('SELECT * FROM messages WHERE id = ?', id);
 }
 // Who gets a message once: the sessions that were open when it was posted (parallel windows), and, if nobody has read it
@@ -351,10 +381,10 @@ export function postMessage(s, p, text, to = 'all') {
 // A message to one session always reaches that session.
 export function unreadMessages(s) {
   return all(`SELECT * FROM messages m WHERE m.project_id = ? AND COALESCE(m.from_session, '') != ?
-      AND (m.recipient = 'all' OR m.recipient = ? OR m.recipient = ?) AND m.created_at >= ?
+      AND (m.recipient = 'all' OR m.recipient = ? OR m.recipient = ? OR (m.recipient LIKE 'package:%' AND (? IS NULL OR m.recipient = ?))) AND m.created_at >= ?
       AND (m.recipient = ? OR ? <= m.created_at OR NOT EXISTS (SELECT 1 FROM message_reads r2 WHERE r2.message_id = m.id))
       AND NOT EXISTS (SELECT 1 FROM message_reads r WHERE r.message_id = m.id AND r.session_id = ?) ORDER BY m.created_at`,
-    s.project_id, s.id, `branch:${s.branch}`, `session:${s.id}`, new Date(Date.now() - 14 * 864e5).toISOString(),
+    s.project_id, s.id, `branch:${s.branch}`, `session:${s.id}`, s.area ?? null, `package:${s.area}`, new Date(Date.now() - 14 * 864e5).toISOString(),
     `session:${s.id}`, s.started_at, s.id);
 }
 export function deleteMessage(id) {

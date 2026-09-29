@@ -99,6 +99,8 @@ function migrate() {
     CREATE TABLE IF NOT EXISTS message_reads(message_id TEXT, session_id TEXT, PRIMARY KEY(message_id, session_id));
     CREATE UNIQUE INDEX IF NOT EXISTS sessions_seq ON sessions(project_id, seq) WHERE seq IS NOT NULL;
 `);
+  // v0.6: a message from a related project (fe/ and be/ as separate repos next to each other) names where it came from
+  try { db.exec('ALTER TABLE messages ADD COLUMN from_project TEXT'); } catch { /* exists */ }
 }
 
 // Keep the -wal file from growing forever (called after saves and at session end).

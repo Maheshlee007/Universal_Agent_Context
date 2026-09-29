@@ -106,4 +106,8 @@ The Claude plugin cache had been copied before the last v0.5 fixes, and VS Code 
 | A per-project DB file | Declined: the risk was retrieval scoping (fixed), not SQLite | `uac backup` and PROJECT.md |
 
 ## 5. v0.6.0 live check results
-_(filled in from the live run below)_
+The checks ran in parallel, each on its own isolated store, using the installed 0.6.0 plugin.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Parent folder with 2 repos (`parent/r1`, `parent/r2`) plus `r1/sub` | ✅ PASS | Real SessionStart hooks: `parent`, `r1` and `r2` became 3 separate projects, and `r1/sub` mapped to `r1`. Nothing was mixed |

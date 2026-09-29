@@ -55,7 +55,13 @@ Each memory line looks like:
 - A near-duplicate is refused with the id to update instead: update that memory rather than adding another.
 
 **Cross-agent messages** reach other sessions of this project in any host (Claude, Codex, Gemini, Cursor…), including parallel branches:
-- **Send** with `uac_message({text, to})`, `to` = `all` | `branch:<name>` | `session:<#n or id>`. Send one when you change something another session depends on: an interface, a shared type, a schema, a route, a config key, a file another branch is editing (see "Other active branches"). Name the verbatim identifiers: ``"Renamed `getUser(id)` → `fetchUser(id, opts)` in src/api/users.ts; update callers."``
+- **Packages and neighbour projects.** In a repo with several packages (for example `fe/` + `be/`, or workspaces) the start context lists them. If this session works in only one, call `uac_bootstrap({area:"fe"})` once: it loads just that package's context and files the session under it. Otherwise the session keeps the whole repo. Projects next to this one (separate repos in the same folder) keep their own context.
+- **Send** with `uac_message({text, to})`. `to` is one of:
+  - `all`
+  - `branch:<name>`
+  - `session:<#n or id>`
+  - `package:<name>`: the session working in that package of this repo
+  - `project:<name>`: a project next to this one, for example `be` beside `fe` Send one when you change something another session depends on: an interface, a shared type, a schema, a route, a config key, a file another branch is editing (see "Other active branches"). Name the verbatim identifiers: ``"Renamed `getUser(id)` → `fetchUser(id, opts)` in src/api/users.ts; update callers."``
 - **Read**: incoming messages are injected once as `[UAC] Message(s) from other sessions`. Act on them (adapt, or reply with `uac_message`). `uac_message({})` with no text lists unread ones.
 
 **Inline controls** (`#uac on|off|pause|resume|save|stop|fresh|continue <n>|deep|import|msg <text>`) are applied by the hook before you see the prompt. Just acknowledge them.
