@@ -504,6 +504,26 @@ function projectFiles(root) {
 // - writing (propose/update): the author typed a wrong path → "did you mean" the file under the project root;
 // - an existing memory whose file is gone: same-named files elsewhere are DIFFERENT files (other copies/scaffolds) and
 //   must not be used to verify or reopen it.
+// Before an LLM-written anchor is stored: a symbol that is not in its (existing) file was misquoted or invented, and would
+// show as "✗ symbol gone" to every later reader. Keep the file anchor, drop the symbol, and say so.
+export function fixAnchors(root, anchors) {
+  if (!root || !Array.isArray(anchors)) return [anchors, []];
+  const notes = [];
+  const fixed = anchors.map((a) => {
+    if (!a?.file || !a.symbol) return a;
+    const abs = path.join(root, String(a.file).replace(/\\/g, '/').replace(/^\.\//, ''));
+    try {
+      if (fs.existsSync(abs) && !fs.readFileSync(abs, 'utf8').includes(a.symbol)) {
+        notes.push(`symbol \`${a.symbol}\` is not in ${a.file}: stored the file anchor without it (quote symbols exactly as written in the code)`);
+        const { symbol, ...rest } = a;
+        return rest;
+      }
+    } catch {}
+    return a;
+  });
+  return [fixed, notes];
+}
+
 export function anchorHints(root, anchors = [], { existing = false } = {}) {
   if (!root) return [];
   const out = [];

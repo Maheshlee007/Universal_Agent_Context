@@ -464,6 +464,7 @@ export function save(s, p, { base_event_id, upto_event_id, summary, checkpoint, 
       const op = c.op || 'add';
       if (op === 'noop') { res.skipped++; continue; }
       for (const id of [c.id, ...(c.ids || [])].filter(Boolean)) S.ownMemory(id, p.id); // never touch another project's memory
+      if (c.anchors?.length) { const [a, notes] = S.fixAnchors(p.root, c.anchors); c.anchors = a; res.warnings.push(...notes.map((w) => `${c.title || c.id}: ${w}`)); }
       const target = c.id && S.memory(c.id);
       if (onBranch && (op === 'update' || op === 'supersede') && target?.scope === 'project') {
         const m = S.propose({ ...c, type: c.type || target.type, title: c.title || target.title, body: c.body ?? target.body, anchors: c.anchors || target.anchors, scope: 'branch' }, { s, p, model });

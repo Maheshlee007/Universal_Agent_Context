@@ -103,6 +103,9 @@ function getById(id, { raw, p } = {}) {
   return t === 'memories' ? { ...row, relations: S.open().prepare('SELECT * FROM memory_relations WHERE a = ? OR b = ?').all(id, id) } : row;
 }
 
+// LLM-written anchors: a symbol not in its file is dropped before storing (it would read as "✗ symbol gone" forever)
+const fixAnchors = (a, p) => { if (!a.anchors) return []; const [x, notes] = S.fixAnchors(p.root, a.anchors); a.anchors = x; return notes; };
+
 const handlers = {
   uac_bootstrap: (a, { s, p }) => { const b = K.bootstrap(s, p, a); return `${b.text}\n${b.loaded}`; },
   uac_sessions: (a, { s, p }) => K.sessionsIndex(p, s, a),
@@ -111,11 +114,13 @@ const handlers = {
   uac_propose: (a, { s, p }) => {
     const d = !a.force && S.nearDuplicate(p.id, a);
     if (d) return `not saved: possible duplicate of ${d.id} "${d.title}" (word overlap ${d.overlap}). If it states the same fact, extend that one: uac_update {id:"${d.id}", body, reason}. If it is a different fact (or contradicts it), call uac_propose again with force:true.`;
+    const notes = fixAnchors(a, p);
     const m = S.propose(a, { s, p });
-    return [`${m.id} saved as ${m.status} (${m.scope} scope)${m.status === 'proposed' ? ': waits for user review (confidence < 0.7)' : ''}`, ...S.anchorHints(p.root, m.anchors)].join('\n');
+    return [`${m.id} saved as ${m.status} (${m.scope} scope)${m.status === 'proposed' ? ': waits for user review (confidence < 0.7)' : ''}`, ...notes, ...S.anchorHints(p.root, m.anchors)].join('\n');
   },
   uac_update: (a, { s, p }) => {
     const old = S.ownMemory(a.id, p.id);
+    const notes = fixAnchors(a, p);
     if (a.status === 'superseded') { if (a.superseded_by) S.ownMemory(a.superseded_by, p.id); if (a.body || a.title) S.updateMemory(a.id, { body: a.body, title: a.title }, { by: 'llm', reason: a.reason }); S.invalidate(a.id, a.reason, a.superseded_by); S.exportProjectMd(p); return `${a.id} → superseded (kept in history, no longer loaded)`; }
     if (a.status === 'done' || a.status === 'archived') { S.updateMemory(a.id, { status: a.status, body: a.body, title: a.title }, { by: 'llm', reason: a.reason }); S.exportProjectMd(p); return `${a.id} → ${a.status}${a.body || a.title ? ' (text updated too)' : ''} (kept in history, no longer loaded)`; }
     if (!a.body && !a.title && !a.anchors && !a.type && !a.status) throw new Error('nothing to change: give body, title, anchors, type or status');
@@ -124,7 +129,7 @@ const handlers = {
       let note = '';
       try { S.verifyMemory(a.id, p); } catch (e) { note = `\n${e.message}`; }
       S.exportProjectMd(p);
-      return [`${a.id} updated (previous version kept in history)${note}`, ...S.anchorHints(p.root, a.anchors || [])].join('\n');
+      return [`${a.id} updated (previous version kept in history)${note}`, ...notes, ...S.anchorHints(p.root, a.anchors || [])].join('\n');
     }
     const m = S.propose({ ...old, type: a.type || old.type, title: a.title || old.title, body: a.body ?? old.body, why: a.reason, anchors: a.anchors || old.anchors, confidence: a.confidence, status: 'proposed' }, { s, p });
     S.relate(m.id, a.id, 'supersedes');

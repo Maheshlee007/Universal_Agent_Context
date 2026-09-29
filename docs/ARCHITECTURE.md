@@ -164,6 +164,9 @@ Full reasoning, including what was declined: [PLAN-v5.md](PLAN-v5.md).
 - **Large-session digest** (`digest`, `pack.mjs`): see Known limitations 6. Regression test: "large session digest keeps every user request".
 - Version bump so the Claude plugin cache (`~/.claude/plugins/cache/uac/universal-agent-context/0.5.1/`) and the VS Code extension carry every v0.5 fix; the 0.5.0 cache was copied before the last fixes landed.
 
+## v0.5.2 changes
+- **Invented anchor symbols are dropped at write time** (`fixAnchors`, `store.mjs`; used by `save`, `uac_propose`, `uac_update`). The final live run showed Haiku quoting symbols that are not in the file (e.g. `computeAnchorFreshness`); stored as is, every later reader saw "✗ symbol gone". Now the file anchor is kept, the symbol is dropped and the save returns a warning. Test: "invented anchor symbol is dropped".
+
 ## Known limitations
 1. **Gemini live test blocked:** headless `gemini -p` hangs on this machine even with UAC's hooks removed. The install and the adapter are unit-tested only.
 2. **Codex isn't installed** here, so the Codex adapter is unit-tested only (and new hooks must be trusted with `/hooks` in Codex).

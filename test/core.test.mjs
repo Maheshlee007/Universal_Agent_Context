@@ -527,3 +527,13 @@ test('large session digest keeps every user request (tool noise dropped first)',
   for (const i of [0, 150, 299]) assert.match(d.events, new RegExp(`request number ${i} please`));
   assert.doesNotMatch(d.events, /tool Read src\/f150\.js/);
 });
+
+test('invented anchor symbol is dropped before storing (file anchor kept, warning returned)', async () => {
+  S.ensureSession({ host: 'claude', session_id: 'sess-anchor', cwd: repo });
+  const out = await callTool('uac_propose', { session_id: 'sess-anchor', type: 'fact', title: 'Rotation lives in auth module zeta', body: 'refresh rotation helper is in src/auth.js zeta',
+    anchors: [{ file: 'src/auth.js', symbol: 'noSuchFunctionHere' }, { file: 'src/auth.js', symbol: 'rotateRefreshToken' }], confidence: 0.9, force: true });
+  const text = out.content?.[0]?.text ?? String(out);
+  assert.match(text, /symbol `noSuchFunctionHere` is not in src\/auth\.js/);
+  const m = S.memory(text.match(/m-[0-9a-f]{6}/)[0]);
+  assert.deepEqual(m.anchors.map((a) => a.symbol ?? null), [null, 'rotateRefreshToken']);
+});
