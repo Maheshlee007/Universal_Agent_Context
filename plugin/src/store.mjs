@@ -6,7 +6,8 @@ import path from 'node:path';
 import { all, get, run, tx, uid, now, J, P, hasFts, open } from './db.mjs';
 import { gitInfo, git, gitRaw, defaultBranch, redact, clip, ignored } from './util.mjs';
 
-export const TYPES = ['fact', 'decision', 'constraint', 'lesson', 'requirement', 'preference', 'warning', 'idea', 'task', 'architecture'];
+// overview: the project's "what is what", one active per project (a new one replaces the previous)
+export const TYPES = ['fact', 'decision', 'constraint', 'lesson', 'requirement', 'preference', 'warning', 'idea', 'task', 'architecture', 'overview'];
 export const MODES = ['off', 'manual', 'automatic'];
 export const AUTO_ACCEPT_CONFIDENCE = 0.7;
 // runaway guard: at most this many LLM memories per chapter (since the session's last save), not per session lifetime,
@@ -427,7 +428,7 @@ export function jaccard(a, b) {
 // for login" vs "…for signup") and never deduplicated; titles must overlap too, not just the bodies.
 export function nearDuplicate(projectId, { type, title, body, scope }, min = 0.8) {
   const t = TYPES.includes(type) ? type : 'fact';
-  if (t === 'task' || t === 'idea') return null;
+  if (t === 'task' || t === 'idea' || t === 'overview') return null;
   const w = words({ title, body }), wt = words({ title });
   let best = null, score = 0;
   for (const m of all(`SELECT id, type, title, body, scope FROM memories WHERE (project_id = ? OR project_id IS NULL) AND status IN ('active','stale','proposed') AND type = ? ORDER BY updated_at DESC LIMIT 300`, projectId, t)) {
@@ -466,7 +467,8 @@ export function propose(input, { s, p, via = 'llm', model }) {
   // an explicit scope wins ("in this repo use tabs" is a project preference); defaults: preference → user (all your
   // projects), work on a feature branch → branch, else project
   const feature = p.branch && p.branch !== defaultBranch(p.root);
-  let scope = ['user', 'project', 'branch'].includes(input.scope) ? input.scope
+  // ponytail: the overview is project-wide whatever the branch (last writer wins); branch versions if that bites
+  let scope = type === 'overview' ? 'project' : ['user', 'project', 'branch'].includes(input.scope) ? input.scope
     : type === 'preference' ? 'user' : feature ? 'branch' : 'project';
   if (scope === 'branch' && !feature) scope = 'project'; // "branch" knowledge needs a real feature branch to belong to
   const confidence = via === 'user' ? 1 : Number(input.confidence ?? 0.7);
@@ -488,6 +490,11 @@ export function propose(input, { s, p, via = 'llm', model }) {
     p.commit ?? null, now());
   run('INSERT INTO memory_versions VALUES (?,?,?,?,?,?,?)', id, 1, input.title, input.body, via, 'created', now());
   setHashes(id, p.root);
+  // one overview per project: an active one retires the previous now, a low-confidence one when it is accepted
+  if (type === 'overview') for (const o of all(`SELECT id FROM memories WHERE project_id = ? AND type = 'overview' AND id != ? AND status IN ('active','stale','proposed')`, p.id, id)) {
+    relate(id, o.id, 'supersedes');
+    if (status === 'active') updateMemory(o.id, { status: 'superseded' }, { by: via, reason: `replaced by overview ${id}` });
+  }
   return memory(id);
 }
 
@@ -777,6 +784,42 @@ export function search(projectId, q, { type, status, limit = 20 } = {}) {
   return [...scores].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([id, score]) => ({ ...memory(id), score }));
 }
 
+// ---------- chapters across sessions (timeline, chapter search) ----------
+const CHAPTERS = `SELECT x.id, x.session_id AS sid, s.seq, x.title, x.body, x.created_at AS at, COALESCE(x.checkpoint_id,
+    (SELECT c.id FROM checkpoints c WHERE c.session_id = x.session_id AND c.trigger = 'save' AND c.ts >= x.created_at ORDER BY c.ts LIMIT 1)) AS cp
+  FROM summaries x JOIN sessions s ON s.id = x.session_id WHERE x.project_id = ? AND x.quality = 'llm' AND s.rolled_into IS NULL`;
+// newest first: sessions on this branch and those with no branch, in this package or repo-wide
+export const recentChapters = (projectId, { branch = null, area = null } = {}) =>
+  all(`${CHAPTERS} AND (s.branch IS NULL OR s.branch IS ?) AND (? IS NULL OR s.area IS NULL OR s.area = ?) ORDER BY x.created_at DESC LIMIT 500`, projectId, branch, area, area);
+export const chapterFiles = (cp) => P(cp ? get('SELECT files FROM checkpoints WHERE id = ?', cp)?.files : null, []);
+
+// Content words of a text: 3+ chars minus stopwords, crudely stemmed; a version (v0.6.1) also counts as its prefix (0.6).
+// ponytail: stopwords + suffix stem, no IDF; FTS5 over summaries if matching needs to get smarter
+const STOP = new Set(('the and for with between what did does done have has had was were are this that these those from into about how why when where which who you your our they them their there then than its also been being will would should could can not but all any some just only more most much very again such each other same too get got make made use used give tell show explain want need please let lets thing things something everything anything okay yes yeah sure fine good great thanks thank continue proceed next now ahead go going keep carry').split(' '));
+const stem = (w) => (w.length < 4 ? w : /.{4}ing$/.test(w) ? w.slice(0, -3) : w.replace(/((?<!e)ed|es|e|(?<!s)s)$/, ''));
+export function queryWords(t) {
+  const out = new Set();
+  for (const w of String(t || '').toLowerCase().match(/v?\d+(?:\.\d+)+|[\p{L}\p{N}_]{3,}/gu) || []) {
+    if (/^v?\d+\./.test(w)) { const n = w.replace(/^v/, '').split('.'); for (let i = 2; i <= n.length; i++) out.add(n.slice(0, i).join('.')); }
+    else if (!STOP.has(w)) out.add(stem(w));
+  }
+  return out;
+}
+// per item: matched = shared content words, score = title hits ×2 + body-only hits
+export const overlap = (qw, items) => items.map((x) => {
+  const t = queryWords(x.title), b = queryWords(x.body);
+  let score = 0, matched = 0;
+  for (const w of qw) if (t.has(w) || b.has(w)) { matched++; score += t.has(w) ? 2 : 1; }
+  return { ...x, score, matched };
+});
+// saved chapters of the project by word overlap with q; rows come newest first and the sort is stable: recency breaks ties
+export function searchChapters(projectId, q, { limit = 5 } = {}) {
+  const qw = queryWords(q);
+  if (!qw.size) return [];
+  return overlap(qw, all(`${CHAPTERS} ORDER BY x.created_at DESC LIMIT 500`, projectId)).filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
 // Importance halves every 23 days unless exempt/pinned; commits since verification lower it further.
 export function decayed(m) {
   let v = m.importance;
@@ -839,7 +882,7 @@ export function maintain(p) {
 }
 
 // ---------- export .context/PROJECT.md (one-way, atomic) ----------
-const SECTION = { architecture: 'Architecture', decision: 'Decisions', constraint: 'Constraints', requirement: 'Requirements',
+const SECTION = { overview: 'Project overview', architecture: 'Architecture', decision: 'Decisions', constraint: 'Constraints', requirement: 'Requirements',
   lesson: 'Lessons', warning: 'Warnings', fact: 'Facts', task: 'Open tasks', idea: 'Ideas (not facts)' };
 export const fmtAnchors = (m) => (m.anchors || []).map((a) => `${a.symbol ? `${a.symbol}@` : ''}${a.file}${a.line ? `:${a.line}` : ''}`).join(', ');
 export function exportProjectMd(p) {

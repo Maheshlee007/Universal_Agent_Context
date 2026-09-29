@@ -91,6 +91,8 @@ const V3_COLUMNS = [
   ['summaries', 'checkpoint_id TEXT'], ['summaries', 'from_ts TEXT'],
   // v0.6: the monorepo package the session was started in (null = repo root or not a monorepo)
   ['sessions', 'area TEXT'],
+  // v0.6.3: ids (s-/m-) already pointed at by the prompt-time hint in this session: never hinted twice
+  ['sessions', 'recalled TEXT'],
 ];
 function migrate() {
   for (const [t, col] of V3_COLUMNS) { try { db.exec(`ALTER TABLE ${t} ADD COLUMN ${col}`); } catch { /* exists */ } }

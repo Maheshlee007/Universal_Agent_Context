@@ -131,6 +131,11 @@ export function handle(ev) {
           S.markRead(cur, msgs);
         }
       }
+      // saved work sharing enough words with this prompt: one line of ids (the reader opens them), within the 10K hook cap
+      if (text && (cur.capture === 'on' || p.mode === 'automatic') && out.join('\n\n').length < 9500) {
+        const h = K.relatedHint(cur, p, text);
+        if (h) out.push(h);
+      }
       return out.length ? { context: out.join('\n\n'), start: needStart } : {};
     }
 

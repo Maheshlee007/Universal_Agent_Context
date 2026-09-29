@@ -14,7 +14,7 @@ You call the uac MCP tools. You may also Read/Grep/Glob files and run `git` to c
    `select:mcp__plugin_universal-agent-context_uac__uac_digest,mcp__plugin_universal-agent-context_uac__uac_save`
    If that loads nothing, call ToolSearch with `uac_digest`, then with `uac_save` (other installs name them `mcp__uac__uac_digest` / `mcp__uac__uac_save`). Never stop because a tool "is not available": load it. Your task is not done until `uac_save` succeeded or the digest said there is nothing new.
 1. Call `uac_digest({session_id})` with the session id you were given (omit it if you weren't given one).
-   - The result is `{session_id, goal, base_event_id, upto_event_id, events, existing, diff_stat, recheck, open_tasks, duplicates, previous_chapter, open_items, more, how_to_save}`.
+   - The result is `{session_id, goal, base_event_id, upto_event_id, events, existing, diff_stat, recheck, open_tasks, duplicates, previous_chapter, open_items, overview, more, how_to_save}`.
    - **You write ONE chapter.** Every save is a permanent chapter of the session, about ONLY the events in this digest. Earlier chapters stay as they are: never re-summarise them. `previous_chapter` (title and goal) is there only for continuity.
    - **`open_items`** are the session's open next steps, numbered. Put the numbers of the ones this chapter finished in `checkpoint.closed`. Put only NEW open work in `next_steps`. UAC carries every open item you don't close forward, word for word.
    - **`more`** means the digest is paged: later events become the next chapter at the next save. Summarise only what you got.
@@ -33,6 +33,7 @@ You call the uac MCP tools. You may also Read/Grep/Glob files and run `git` to c
    - **Open tasks.** For each item in `open_tasks` that this session finished, emit `{op:'done', id}` (or `update` it if it is only partly done). A task that stays "open" after the work is done is worse than no task.
    - **Duplicates.** `duplicates` lists groups of same-type memories whose wording overlaps. If a group really says the same thing, emit ONE `{op:'supersede', ids:[…all of them…], type, title, body, anchors, confidence}` that replaces it. Leave them alone if they differ in substance.
    - **Judge a memory only at its anchored path.** If its anchored file is gone, a same-named file elsewhere is a different file (another copy or scaffold): never verify, update or retire a memory from it. Use `conflict` or leave it alone.
+   - **Project overview.** `overview` is the project's "what is what" (`{id, body}`, or null if none exists yet). Only if this chapter changed what the project is, its parts, its current version/state or where its docs live, emit ONE candidate `{op:'update', id:<overview.id>, type:'overview', title:'Project overview', body}` (or `{op:'add', type:'overview', title:'Project overview', body}` if `overview` is null). The body is at most 150 words: what it is, its parts with paths, the current state/version, the next direction, and where the docs are. Otherwise leave it alone.
    - **Feature branches.** On a branch other than the default one, facts that exist only on this branch are branch knowledge. An `update` or `supersede` of project knowledge from a branch session is stored as a branch version and replaces the original only when the branch is merged, so write it as the truth of this branch.
 4. Make exactly ONE `uac_save` call:
    ```
@@ -66,6 +67,7 @@ You call the uac MCP tools. You may also Read/Grep/Glob files and run `git` to c
 | lesson | Something failed and was then fixed | "X fails because Y; fix: Z" |
 | requirement | A stated product or user need | The need and its acceptance criteria |
 | architecture | Module boundaries, data flow, where things live | Short map with paths |
+| overview | Only as described in step 3 (one per project; a new one replaces the previous) | ≤ 150 words: what it is, parts with paths, current state/version, next direction, where the docs are |
 | preference | How the user likes to work (style, tools, tone) | The preference, stated once, plus where it applies and where it does NOT (e.g. "inline styles for dynamic colors in React components; not for static layout, which stays Tailwind") |
 | warning | A trap, fragile code, or "don't touch X without Y" | The risk and the trigger |
 | idea | A brainstormed or deferred possibility | Always type `idea`. It never becomes a fact or a decision. |

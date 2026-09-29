@@ -8,7 +8,7 @@ description: Surveys a repository end to end and seeds UAC project knowledge wit
 **Goal:** a holistic, accurate map of the repo, stored as typed UAC memories. The next session should understand the project without re-exploring it. You use the uac MCP tools (short names below).
 
 ## 1. Check what already exists
-- Call `uac_search({query:"architecture"})`, `uac_search({query:"convention"})` and `uac_search({query:"constraint"})`.
+- Call `uac_search({query:"architecture"})`, `uac_search({query:"convention"})`, `uac_search({query:"constraint"})` and `uac_search({type:"overview"})` (lists the current overview, if any).
 - Note the existing ids. You'll update or supersede those, not duplicate them.
 
 ## 2. Survey (read, don't guess)
@@ -26,7 +26,8 @@ Call `uac_propose` once per item, with `scope:"project"`:
 
 | type | one memory per | body |
 |---|---|---|
-| architecture | the whole system (1 overview), plus one per major module | purpose, boundaries, data flow, key paths |
+| overview | the project: exactly ONE, `title:"Project overview"` (it replaces any earlier one; every session start shows it first) | ≤ 150 words: what it is, its parts with paths, current state/version, next direction, where the docs are |
+| architecture | the system's structure and data flow, plus one per major module | purpose, boundaries, data flow, key paths |
 | fact | a convention (naming, layout, patterns) | the rule plus one example path |
 | constraint | a must or must-not | the rule and its source (file, doc or config) |
 | warning | fragile or surprising code | the risk and what to do before touching it |

@@ -9,7 +9,9 @@ UAC gives coding agents memory across sessions, branches and tools: Claude Code,
 
 ## What UAC does
 - Records each session through the host's hooks and turns it into a short **session card**: what was done, what works, what is broken, next steps, files.
-- A long session is never squeezed into one card: every save is a permanent **chapter**. The next session gets the latest chapter plus a one-line index of the earlier ones, and open next steps carry forward until a chapter closes them.
+- A long session is never squeezed into one card: every save is a permanent **chapter**. The next session gets the latest chapter plus a **timeline** of the last 8 chapters of all sessions on the branch, and open next steps carry forward until a chapter closes them.
+- Opens every start context with a **project overview** (what the project is, its parts, current version/state, where the docs are), kept current by the saves, and a short "how to use this context": it is a summary, so the agent searches and opens the related chapters before a task or an answer about earlier work. `uac_search` searches chapters too.
+- At each prompt, if saved chapters or knowledge share several words with it, one line names up to 3 of them (`[UAC] Saved work that may relate to this: …`) so the agent opens them instead of guessing.
 - **fe/ + be/ and monorepos** (workspaces, Turborepo, Nx, lerna, or plain `fe/` + `be/` folders): each session and knowledge item knows its package.
   - A session started in `fe/`, or one that says `uac_bootstrap{area:"fe"}` after starting at the root, gets fe's context plus repo-wide items.
   - A session that works on both keeps the whole repo, with items tagged `[in fe]` / `[in be]`.
@@ -66,13 +68,24 @@ Until you answer, nothing is recorded. Change it later with `uac mode …` or in
 **1. Start a session** on `feature/auth`. The hook injects the context. Trimmed example:
 ```
 # UAC 0.6.1 · my-app · branch `feature/auth` · mode automatic · recording ON · this session 4c1e09ab (session_id=4c1e09ab-…)
-Memory = claims to verify, not facts: ✓ checked against code · ⚠ file changed since · ✗ anchor gone. Judge a memory only at its anchored path; …
+Memory = claims, not facts: ✓ matches the code at its anchor · ⚠ file changed since · ✗ anchor gone · …
+
+## How to use this context
+- The overview, timeline and continuing card below are summaries, not the record. …
+
+## Project overview
+my-app: invoice SaaS, fe/ (React) + be/ (Express), v2.3 in beta; next: billing. Docs: docs/ARCHITECTURE.md
+_(updated 2026-09-29 by claude-haiku-4-5, verify details in code)_ `m-0c1d2e`
 
 ## Continuing from (most recent session on this branch)
 ### #7 3f9a21c0 · feature/auth · claude (claude-opus-5-5) · 2h ago
 **Add per-user login rate limiter in src/auth.js** _(from 91 events)_
 Working: limiter blocks the 6th attempt · Next: add a test · Files: src/auth.js
 After this card (unsaved, 2h ago): last request "add a test for the limiter"
+
+## Timeline (recent chapters, all sessions on this branch)
+- 09-28 #5 · "Fix login redirect after OAuth callback" · files: src/login.js (s-7e70e1)
+- 09-27 #4 · "Add session cookie `sid` (httpOnly)" · files: src/auth.js, src/cookie.js (s-48f39d)
 
 ## Must not violate
 - **Uses node test runner**: npm test runs node --test `m-331935`
@@ -160,7 +173,7 @@ The hook already injects the start context. Agents use these tools for more:
 | `uac_bootstrap` | Load more or different context: other sessions' cards, `depth:"deep"`, or `fresh` |
 | `uac_sessions` | List sessions: #n, short id, branch, age, live/ended, card, unsaved, raw log, title |
 | `uac_get` | Full content by id (memory, card, session); `raw:true` adds the raw log |
-| `uac_search` | Search this project's memory |
+| `uac_search` | Search this project's memory, plus its saved chapters (`chapters:` section) |
 | `uac_propose` | Record a durable memory; refused if a near-duplicate exists (update that one) |
 | `uac_update` | Change a memory, or close it: `done`, `superseded`, `archived` |
 | `uac_verify` | Mark memories still true after checking them at their anchored path |
@@ -173,7 +186,7 @@ The hook already injects the start context. Agents use these tools for more:
 
 ## Chapters (long sessions)
 - Each save writes a chapter about only the work since the last save. Earlier chapters are never rewritten.
-- The start context shows `chapter N/N`, the session goal, the latest chapter in full, and `Earlier chapters` lines (`s-id · time · "title" · files`).
+- The start context shows `chapter N/N`, the session goal and the latest chapter in full, then a `## Timeline` of the last 8 chapters of all sessions on the branch (`MM-DD #n · "title" · files (s-id)`).
 - `uac_get {ids:["s-…"]}` opens one chapter, and `uac_get {ids:["#7"]}` lists every chapter of session #7.
 - Open next steps are carried by UAC itself, marked `(open since chN)`. The compressor closes them by number, so none silently disappears.
 

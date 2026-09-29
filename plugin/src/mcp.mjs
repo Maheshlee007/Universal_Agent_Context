@@ -5,7 +5,7 @@ import readline from 'node:readline';
 import * as S from './store.mjs';
 import * as K from './pack.mjs';
 import { rawLog } from './import.mjs';
-import { VERSION, ROOT, semverCmp, claudeInstalled } from './util.mjs';
+import { VERSION, ROOT, semverCmp, claudeInstalled, clip } from './util.mjs';
 import { run, all } from './db.mjs';
 
 const str = { type: 'string' }, num = { type: 'number' }, arr = { type: 'array', items: { type: 'string' } };
@@ -25,9 +25,9 @@ const TOOLS = [
     obj({ limit: num, all: { type: 'boolean', description: 'Include rolled-up and never-used sessions' } })],
   ['uac_get', `Full content by id: memories (m-), summaries (s-), checkpoints (c-), or sessions (their card). raw:true adds a session's raw log (host transcript, else UAC's kept last turns). ${refs}`,
     obj({ ids: arr, raw: { type: 'boolean' } }, ['ids'])],
-  ['uac_search', 'Search this project\'s memory (BM25 + trigram): "id · type · status · title — snippet". Empty query lists the most recent.',
+  ['uac_search', 'Search this project\'s memory (BM25 + trigram): "id · type · status · title — snippet", then its saved chapters (earlier work, all sessions) under "chapters:"; uac_get opens one. Empty query lists the most recent memories.',
     obj({ query: str, type: { type: 'string', enum: S.TYPES }, status: { type: 'string', enum: ['proposed', 'active', 'stale', 'conflict', 'superseded', 'archived'] }, limit: num })],
-  ['uac_propose', 'Record a durable memory: decision (with why), constraint, lesson, requirement, architecture, fact, preference (say where it applies), warning, task, idea. Quote identifiers verbatim; anchor code. Refused if a near-duplicate exists (update that one; force:true overrides). confidence defaults to 0.7 (accepted automatically; < 0.7 waits for the user).',
+  ['uac_propose', 'Record a durable memory: decision (with why), constraint, lesson, requirement, architecture, fact, preference (say where it applies), warning, task, idea, overview (what the project is; one per project, replaces the previous). Quote identifiers verbatim; anchor code. Refused if a near-duplicate exists (update that one; force:true overrides). confidence defaults to 0.7 (accepted automatically; < 0.7 waits for the user).',
     obj({ ...sid, type: { type: 'string', enum: S.TYPES }, title: str, body: str, why: str, files: arr, anchors: anchorsSchema, confidence: num,
       scope: { type: 'string', enum: ['user', 'project', 'branch'], description: 'user = all your projects (default for preferences)' },
       review_when: { type: 'string', description: 'For deferred/YAGNI decisions: what should trigger a revisit' }, force: { type: 'boolean' } }, ['type', 'title', 'body'])],
@@ -71,6 +71,13 @@ function ctx(args, name) {
 }
 
 const index = (ms) => ms.map((m) => `${m.id} · ${m.type} · ${m.status} · ${m.title} — ${String(m.body || '').replace(/\s+/g, ' ').slice(0, 100)}`).join('\n') || '(no results)';
+// memories, then the chapters that match (a type/status filter asks for memories only)
+function search(a, p) {
+  const ms = S.search(p.id, a.query, a);
+  const ch = a.query && !a.type && !a.status ? S.searchChapters(p.id, a.query, { limit: 5 }) : [];
+  if (!ch.length) return index(ms);
+  return `${ms.length ? index(ms) : '(no memories)'}\nchapters:\n${ch.map((c) => `${c.id} · ${S.ref({ seq: c.seq, id: c.sid })} · ${String(c.at).slice(0, 10)} · "${c.title}" — ${clip(String(c.body || '').replace(/\s+/g, ' '), 160)}`).join('\n')}`;
+}
 
 function getById(id, { raw, p } = {}) {
   const t = { m: 'memories', s: 'summaries', c: 'checkpoints' }[id.split('-')[0]];
@@ -119,7 +126,7 @@ const handlers = {
   uac_bootstrap: (a, { s, p }) => { const b = K.bootstrap(s, p, a); return `${b.text}\n${b.loaded}`; },
   uac_sessions: (a, { s, p }) => K.sessionsIndex(p, s, a),
   uac_get: (a, { p }) => a.ids.map((id) => getById(String(id), { raw: a.raw, p })),
-  uac_search: (a, { p }) => index(S.search(p.id, a.query, a)),
+  uac_search: (a, { p }) => search(a, p),
   uac_propose: (a, { s, p }) => {
     const d = !a.force && S.nearDuplicate(p.id, a);
     if (d) return `not saved: possible duplicate of ${d.id} "${d.title}" (word overlap ${d.overlap}). If it states the same fact, extend that one: uac_update {id:"${d.id}", body, reason}. If it is a different fact (or contradicts it), call uac_propose again with force:true.`;

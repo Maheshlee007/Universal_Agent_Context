@@ -534,11 +534,11 @@ test('chapters: each save is a chapter; open items carried by code; digest pages
   assert.equal(c.chapters, 2);
   assert.equal(c.title, 'Chapter 2 work');
   assert.deepEqual(c.next_steps, ['add tests', 'write docs (open since ch1)'], 'closed item gone, open one carried verbatim');
-  // start context: latest chapter in full + earlier chapters as index lines with files
+  // start context: latest chapter in full + earlier chapters (of all sessions) as timeline lines with files
   const txt = K.bootstrap(null, P0(), { sessions: [sid], record: false }).text;
   assert.match(txt, /chapter 2\/2/);
   assert.match(txt, /Session goal \(chapter 1\): goal 1/);
-  assert.match(txt, /Earlier chapters \(titles only[^\n]*\n- s-[0-9a-f]{6} · [^\n]*"Chapter 1 work" · files: src\/part1\.js/);
+  assert.match(txt, /## Timeline \(recent chapters, all sessions on this branch\)\n(- [^\n]*\n)*- \d\d-\d\d #\d+ · "Chapter 1 work" · files: src\/part1\.js \(s-[0-9a-f]{6}\)/);
   // drill-down
   const [g] = await callTool('uac_get', { session_id: sid, ids: [ch[0].id] });
   assert.equal(g.chapter.title, 'Chapter 1 work');

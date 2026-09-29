@@ -1,6 +1,7 @@
 // Start context (injected by the hook), session-centric bootstrap, digest/save for the compressor,
 // deterministic auto cards and snapshots, merge/rollup, handoff.
 import fs from 'node:fs';
+import path from 'node:path';
 import { all, get, run, tx, uid, now, J, P, checkpointWal } from './db.mjs';
 import * as S from './store.mjs';
 import { changedFiles, tokens, clip, git, defaultBranch, VERSION, semverCmp, claudeInstalled } from './util.mjs';
@@ -42,18 +43,16 @@ function fresh(m, root) {
   return f.state === 'verified' ? '✓' : '(no anchor)';
 }
 
-const at = (iso) => String(iso || '').slice(5, 16).replace('T', ' ');
-const span = (e) => (e.pre ? at(e.at) : `${at(e.from_ts)}–${String(e.from_ts).slice(0, 10) === String(e.at).slice(0, 10) ? at(e.at).slice(6) : at(e.at)}`);
-
-// A session card = its latest chapter in full + one line per earlier chapter (titles only; uac_get opens one).
-function fmtCard(c, meta, { commits, sessionId } = {}) {
+// A session card = its latest chapter in full (the bootstrap's Timeline lists the other chapters, of all sessions).
+function fmtCard(c, meta, { commits, sessionId, root } = {}) {
   const chs = sessionId && c.chapters ? S.chapters(sessionId) : [];
   const earlier = c.chapter_no ? chs.slice(0, -1) : chs; // an auto card (unsaved work) comes after every saved chapter
   const L = [`### ${meta}${c.chapter_no && c.chapters > 1 ? ` · chapter ${c.chapter_no}/${c.chapters}` : !c.chapter_no && chs.length ? ` · after ${chs.length} saved chapter${chs.length === 1 ? '' : 's'}` : ''}`];
   if (earlier[0]?.goal && earlier[0].goal !== c.goal) L.push(`Session goal (chapter 1): ${clip(earlier[0].goal, 200)}`);
   if (c.title) L.push(`**${c.title}**${c.quality === 'auto' ? ' _(auto card from recorded events, no LLM summary yet)_' : c.events_n ? ` _(from ${c.events_n} events)_` : ''}`);
   // work recorded AFTER this card was written is the current state: shown first, and the card's Next may already be done
-  if (c.tail) L.push(`Current state (after this card, unsaved, ${ago(c.tail.at)}): ${[c.tail.goal && `last request "${clip(c.tail.goal, 160)}"`, c.tail.note && `last result "${clip(c.tail.note, 200)}"`, c.tail.files?.length && `files ${c.tail.files.slice(0, 6).join(', ')}`].filter(Boolean).join('; ')}`);
+  const tailFiles = (c.tail?.files || []).map((f) => rel(root, f)).filter(Boolean); // (tails written before 0.6.3 may hold outside paths)
+  if (c.tail) L.push(`Current state (after this card, unsaved, ${ago(c.tail.at)}): ${[c.tail.goal && `last request "${clip(c.tail.goal, 160)}"`, c.tail.note && `last result "${clip(c.tail.note, 200)}"`, tailFiles.length && `files ${tailFiles.slice(0, 6).join(', ')}`].filter(Boolean).join('; ')}`);
   if (c.body) L.push(clip(c.body.replace(/\n{2,}/g, '\n'), 1200));
   if (c.working) L.push(`Working: ${clip(c.working, 300)}`);
   if (c.broken) L.push(`Broken/open: ${clip(c.broken, 300)}`);
@@ -62,11 +61,6 @@ function fmtCard(c, meta, { commits, sessionId } = {}) {
   if (c.note) L.push(`Note for next dev: ${clip(c.note, 300)}`);
   if (c.gaps) L.push(`Not in this card (verify in code before relying on it): ${clip(c.gaps, 300)}`);
   if (commits?.length) L.push(`Commits since this card: ${commits.slice(0, 5).join(' · ')}`);
-  if (earlier.length) {
-    L.push(`Earlier chapters (titles only: for questions about earlier work, or if your task touches their files, uac_get {ids:["s-…"]} first):`);
-    for (const e of earlier.slice(-5)) L.push(`- ${e.id} · ${span(e)} · "${clip(e.title, 90)}"${e.files.length ? ` · files: ${e.files.slice(0, 4).join(', ')}` : ''}${e.pre ? ' · pre-chapter card, overlaps later ones' : ''}`);
-    if (earlier.length > 5) L.push(`- +${earlier.length - 5} earlier: uac_get {ids:["${S.shortId(sessionId)}"]} lists all chapters`);
-  }
   return L.join('\n');
 }
 // Human/LLM label for a session: its card/title, else what little we know, always with age.
@@ -76,10 +70,12 @@ export const sessionLabel = (x, n = 50) =>
 const isFile = (t) => !!t && /[\\/]|\.\w{1,5}$/.test(t) && !/[\s*?]/.test(t);
 // failures not followed by a success of the same tool on the same target
 const stillFailing = (evs) => evs.filter((e, i) => e.kind === 'tool_fail' && !evs.slice(i + 1).some((x) => x.kind === 'tool' && x.tool === e.tool && x.target === e.target));
-// repo-relative path for cards (tool targets are often absolute)
+// repo-relative path for cards (tool targets are often absolute); null for an absolute path outside the project (a temp
+// scratchpad, another repo): not this project's files
 const rel = (root, f) => {
   const r = String(root || '').replace(/\\/g, '/').replace(/\/$/, '') + '/', x = String(f).replace(/\\/g, '/');
-  return root && x.toLowerCase().startsWith(r.toLowerCase()) ? x.slice(r.length) : x;
+  if (!root) return x;
+  return x.toLowerCase().startsWith(r.toLowerCase()) ? x.slice(r.length) : /^([a-z]:)?\/|^~/i.test(x) ? null : x;
 };
 const GROUPS = [['decision', 'Decisions'], ['warning', 'Warnings'], ['lesson', 'Lessons'], ['architecture', 'Architecture'],
   ['fact', 'Facts'], ['task', 'Open tasks'], ['preference', 'Preferences (apply only where stated)']];
@@ -87,6 +83,31 @@ const cardMeta = (s, x) => `${x ? `${S.ref(x)} · ` : ''}${s.branch || 'no-branc
 // (1–2 unsaved events after a save are its closing reply: not worth a mention)
 const state = (x, selfId) => `${x.id === selfId ? 'this session' : x.live ? `active ${ago(x.last_active)}, not ended (another window, or closed without SessionEnd)` : x.status === 'ended' ? 'ended' : 'idle'}, ${x.card ? (x.card.quality === 'auto' ? 'auto card' : 'saved card') : 'no card'}${(x.card?.quality === 'auto' ? x.unsaved >= OTHER_SAVE_MIN : x.unsaved >= 3) || (x.unsaved && !x.card) ? `, ${x.unsaved} unsaved` : ''}${x.raw ? '' : ', no raw log'}`;
 const hasContent = (c) => c && (c.title || c.body || c.working || c.next_steps?.length);
+const read = (root, f) => { try { return fs.readFileSync(path.join(root, f), 'utf8'); } catch { return null; } };
+// status / report / architecture docs of the project (named by the overview fallback)
+const docsOf = (root) => { try { return fs.readdirSync(path.join(root, 'docs')).filter((f) => /^(REPORT|ARCHITECTURE|CHANGELOG|README).*\.md$/i.test(f)).sort().slice(0, 8).map((f) => `docs/${f}`); } catch { return []; } };
+// The project's "what is what": its overview memory, else one derived from README / package.json / docs (no LLM).
+function overviewText(p) {
+  const m = get(`SELECT * FROM memories WHERE project_id = ? AND type = 'overview' AND status IN ('active','stale') AND muted = 0 ORDER BY updated_at DESC LIMIT 1`, p.id);
+  if (m) return `${clip(String(m.body || '').trim(), 1400)}\n_(updated ${String(m.updated_at).slice(0, 10)} by ${m.source_model || m.source_agent || m.source || '?'}, verify details in code)_ \`${m.id}\``;
+  let readme = null;
+  try { readme = fs.readdirSync(p.root).find((f) => /^readme\.md$/i.test(f)); } catch {}
+  // first prose paragraph: not a heading, badge, html, table, quote, list, rule or code block
+  const para = String(readme ? read(p.root, readme) : '').replace(/\r/g, '').replace(/```[\s\S]*?```/g, '').split(/\n\s*\n/).map((x) => x.trim())
+    .find((x) => /[a-z]{3}/i.test(x) && !/^(#|!\[|\[!\[|<|\||>|[-*+] |\d+\. |[-*_=]{3})/.test(x));
+  const plain = para?.replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/\*\*|__|[*`]/g, '').replace(/\s+/g, ' ').trim();
+  const version = P(read(p.root, 'package.json'), null)?.version;
+  const pkgs = S.packagesOf(p.root), docs = docsOf(p.root);
+  return [`**${p.name}**${plain ? `: ${clip(plain, 400)}` : ''}`, pkgs.length >= 2 && `Packages: ${[...pkgs].sort().join(', ')}`, version && `Version (package.json): ${version}`,
+    docs.length && `Docs: ${docs.join(', ')}`, '_(derived from README/package.json/docs: no overview saved yet)_'].filter(Boolean).join('\n');
+}
+// how to read what follows: it is a summary, the record is one uac_search/uac_get away (plain process, no trigger phrases)
+const howTo = (mode) => `\n## How to use this context\n` +
+  `- The overview, timeline and continuing card below are summaries, not the record.\n` +
+  `- Before starting any task, and before answering about earlier work: uac_search with the task's own key terms (feature, file, error, component), then uac_get the related chapters (s-…) and items (m-…). Decisions, failed attempts and open items live there.\n` +
+  `- Answer questions about earlier work from those chapters, not from these summaries.\n` +
+  `- When your change touches a memory, check it at its anchor, then uac_verify {ids} or uac_update.\n` +
+  `- ${mode === 'automatic' ? 'Saving is automatic: the Stop hook asks for it when it is due.' : 'Saving happens only when the user asks ("#uac save").'}\n`;
 
 // ---------- bootstrap: project knowledge + chosen session cards + other branches + messages ----------
 // Returns the text plus `loaded`: ONE line saying what was loaded, what was not, and the exact calls to widen it.
@@ -107,7 +128,9 @@ export function bootstrap(s, p, opts = {}) {
     if (next.length) { sessions = next; oneShot = true; }
   }
   sessions = S.resolveSessionRefs(p.id, sessions);
-  const budget = opts.budget_tokens || BUDGET[depth === 'deep' ? 'deep' : 'normal'];
+  // the overview is always shown in full: the cards and knowledge share what is left of the budget
+  const ov = overviewText(p);
+  const budget = Math.max(400, (opts.budget_tokens || BUDGET[depth === 'deep' ? 'deep' : 'normal']) - tokens(ov));
   const numbered = S.listSessions(p.id, { limit: 200 });
   const byId = new Map(numbered.map((x) => [x.id, x]));
 
@@ -145,7 +168,7 @@ export function bootstrap(s, p, opts = {}) {
   const hits = new Map(goal ? S.search(p.id, goal, { limit: 60 }).map((m, i) => [m.id, 1 - i / 60]) : []);
   const changed = changedFiles(p.root).map((f) => f.replace(/\\/g, '/'));
   const mems = S.freshness(p, all(`SELECT * FROM memories WHERE (project_id = ? OR project_id IS NULL) AND status IN ('active','stale')
-      AND muted = 0 AND type != 'idea' AND (scope != 'branch' OR branch = ?)
+      AND muted = 0 AND type NOT IN ('idea','overview') AND (scope != 'branch' OR branch = ?)
       AND id NOT IN (SELECT r.b FROM memory_relations r JOIN memories x ON x.id = r.a WHERE r.rel = 'supersedes' AND x.scope = 'branch'
         AND x.branch = ? AND x.status IN ('active','stale'))`, p.id, freshStart ? '__none__' : p.branch ?? '', p.branch ?? '').map(S.hydrate));
   // (on a branch, a project memory that this branch has a newer version of is shown only as that version)
@@ -198,13 +221,25 @@ export function bootstrap(s, p, opts = {}) {
   const oldest = cards.map((x) => x.c.at).filter(Boolean).sort()[0];
   const log = oldest ? git(p.root, 'log', `--since=${oldest}`, '--max-count=30', '--format=%h %cI %s').split(/\r?\n/).filter(Boolean)
     .map((l) => { const [h, d, ...m] = l.split(' '); return { at: Date.parse(d), text: `${h} ${clip(m.join(' '), 60)}` }; }) : [];
-  const loadedCards = [];
+  const loadedCards = [], shown = new Set();
   for (const { s: cs, c, x } of cards) {
     const parents = (P(cs.loaded, {})?.sessions || []).map((id) => byId.get(id)).filter(Boolean);
     const live = x && x.live ? ` · active ${ago(x.last_active)}, not ended${c.quality === 'auto' ? ' (its unsaved work, as an auto card)' : ''}` : '';
     const meta = cardMeta(cs, x) + live + (parents.length ? ` · continues ${parents.map(S.ref).join(', ')}` : '');
-    const t = fmtCard(S.card(cs.id), meta, { commits: log.filter((l) => l.at > Date.parse(c.at)).map((l) => l.text), sessionId: cs.id });
-    if (take(t, budget * 0.45) || !cardTexts.length) { cardTexts.push(t); loadedCards.push(x || { id: cs.id, seq: cs.seq }); }
+    const t = fmtCard(S.card(cs.id), meta, { commits: log.filter((l) => l.at > Date.parse(c.at)).map((l) => l.text), sessionId: cs.id, root: p.root });
+    if (take(t, budget * 0.45) || !cardTexts.length) { cardTexts.push(t); loadedCards.push(x || { id: cs.id, seq: cs.seq }); shown.add(c.summary_id); }
+  }
+  // timeline: the latest chapters of ALL sessions here (a card is one session), in the card budget; the newest 3 always
+  const timeline = [];
+  if (!freshStart) {
+    const chs = S.recentChapters(p.id, { branch: p.branch, area: here }).filter((x) => !shown.has(x.id));
+    for (const [i, x] of chs.slice(0, 8).entries()) {
+      const files = S.chapterFiles(x.cp).map((f) => rel(p.root, f)).filter(Boolean).slice(0, 3);
+      const line = `- ${String(x.at).slice(5, 10)} #${x.seq ?? '?'} · "${clip(x.title, 90)}"${files.length ? ` · files: ${files.join(', ')}` : ''} (${x.id})`;
+      if (!take(line, budget * 0.45)) { if (i >= 3) break; used += tokens(line); }
+      timeline.push(line);
+    }
+    if (chs.length > timeline.length) { timeline.push(`(+${chs.length - timeline.length} older: uac_search finds them by topic)`); used += tokens(timeline.at(-1)); }
   }
   const mustTexts = [], knowTexts = [];
   const maxItems = opts.limit > 0 ? opts.limit : Infinity;
@@ -214,16 +249,18 @@ export function bootstrap(s, p, opts = {}) {
   const mode = p.mode || 'first run';
   const cur = s && S.session(s.id);
   let out = `# UAC ${VERSION} · ${p.name} · branch \`${p.branch || '-'}\`${here ? ` · package \`${here}\` (other packages' knowledge not loaded)` : ''} · mode ${mode} · ${cur ? `${cur.capture === 'on' ? 'recording ON' : 'not recording'} · this session ${cur.seq ? `#${cur.seq} ` : ''}${S.shortId(cur.id)} (session_id=${cur.id})` : ''}\n` +
-    `Memory = claims, not facts: ✓ matches the code at its anchor · ⚠ file changed since · ✗ anchor gone · (no anchor) can't be checked. Check one only when your task touches it, at its anchored path (relative to the project root); then uac_verify {ids} or uac_update.\n`;
+    `Memory = claims, not facts: ✓ matches the code at its anchor · ⚠ file changed since · ✗ anchor gone · (no anchor) can't be checked. Anchored paths are relative to the project root.\n` +
+    howTo(p.mode) + `\n## Project overview\n${ov}\n`;
   const knowledgeTokens = [...mustTexts, ...knowTexts].reduce((a, i) => a + tokens(i.text), 0);
   if (!cards.length && knowledgeTokens < NEAR_EMPTY_TOKENS)
     out += `\n> UAC knows almost nothing about this project yet. To build project knowledge, run the uac-init-knowledge skill ("survey this codebase for UAC") or /universal-agent-context:uac init.\n`;
   if (cardTexts.length) out += `\n## Continuing from${defaulted ? ' (most recent session on this branch)' : ''}\n${cardTexts.join('\n\n')}\n`;
+  if (timeline.length) out += `\n## Timeline (recent chapters, all sessions on this branch)\n${timeline.join('\n')}\n`;
   // where this session sits: packages of this repo, and projects next to it (each keeps its own context; messages reach them)
-  const rel = S.relatedProjects(p);
+  const related = S.relatedProjects(p);
   if (pkgs.length >= 2 && !here) out += `\nPackages in this repo: ${pkgs.map((x) => `\`${x}\``).join(', ')} (knowledge is tagged [in <package>]). Working in only one? uac_bootstrap{area:"${pkgs.at(-1)}"} loads just its context and files this session under it; otherwise this session keeps the whole repo. Reach the session working in another: uac_message{to:"package:<name>", text}.\n`;
   else if (here && pkgs.length >= 2) out += `\nOther packages: ${pkgs.filter((x) => x !== here).map((x) => `\`${x}\``).join(', ')}: uac_message{to:"package:<name>", text} reaches the session working there; uac_bootstrap{area:""} for the whole repo.\n`;
-  if (rel.length) out += `\nRelated projects (each keeps its own context): ${rel.slice(0, 6).map((x) => `\`${x.name}\``).join(', ')}. Tell the session working there: uac_message{to:"project:<name>", text}.\n`;
+  if (related.length) out += `\nRelated projects (each keeps its own context): ${related.slice(0, 6).map((x) => `\`${x.name}\``).join(', ')}. Tell the session working there: uac_message{to:"project:<name>", text}.\n`;
   if (msgs.length) {
     out += `\n## Messages for you (reply: uac_message {to:"session:<id>", text}; from another project: to:"project:<name>")\n${msgs.map((m) => `- from ${from(m)} (${ago(m.created_at)}): ${m.text}`).join('\n')}\n`;
     // a session nobody typed in yet (a window reload) must not consume them: they are marked read at its first prompt
@@ -248,7 +285,7 @@ export function bootstrap(s, p, opts = {}) {
   const wider = [omitted > 0 && `uac_bootstrap{depth:"deep"} (+${omitted} knowledge items)`, notLoaded.length && `uac_bootstrap{sessions:["${S.ref(notLoaded[0]).split(' ')[0]}"]}`,
     otherPkg > 0 && `uac_bootstrap{area:""} (whole repo, +${otherPkg} items of other packages)`,
     rawRef && `uac_get{ids:["${S.ref(rawRef).split(' ')[0]}"], raw:true} (exact history)`].filter(Boolean);
-  const loaded = `Loaded ~${used} tok: ${loadedCards.length ? loadedCards.map((x) => `card ${S.ref(x)}`).join(' + ') : 'no session card'} + ${mustTexts.length + knowTexts.length}/${items.length} knowledge items. ` +
+  const loaded = `Loaded ~${used + tokens(ov)} tok: ${loadedCards.length ? loadedCards.map((x) => `card ${S.ref(x)}`).join(' + ') : 'no session card'} + ${mustTexts.length + knowTexts.length}/${items.length} knowledge items. ` +
     (notLoaded.length || omitted > 0 || otherPkg > 0
       ? `Not loaded: ${[notLoaded.slice(0, 4).map((x) => `${S.ref(x)} "${clip(x.title || x.card?.title || x.agent, 40)}" (${state(x)})`).join(' · ') + (notLoaded.length > 4 ? ` · +${notLoaded.length - 4} more (uac_sessions)` : ''), omitted > 0 && `${omitted} knowledge items`, otherPkg > 0 && `${otherPkg} knowledge items about other packages (uac_search finds them)`].filter(Boolean).join('; ')}. Wider: ${wider.join(' · ')}`
       : `Nothing else stored.${rawRef ? ` Exact history: uac_get{ids:["${S.ref(rawRef).split(' ')[0]}"], raw:true}` : ''}`);
@@ -281,6 +318,23 @@ export function pendingOther(p, s) {
     && (S.session(x.id).save_asked || 0) < (get('SELECT MAX(id) AS m FROM events WHERE session_id = ?', x.id).m || 0)) || null;
 }
 
+// ---------- prompt-time hint: saved work that shares enough words with the user's prompt ----------
+// Not intent-based: any prompt is scored against chapters and knowledge by its own words; one line of ids, no bodies, no git.
+// Strong = 2+ shared content words (1 per 8 in a long prompt, or a pasted text matches everything) and a title hit or 3
+// words: "ok" / "continue" / "yes do it" have no content words at all (stopwords).
+// ponytail: fixed threshold, no IDF; weight words by rarity if hints prove noisy in big stores
+export function relatedHint(s, p, prompt) {
+  const q = clip(prompt, 2000), qw = S.queryWords(q);
+  if (qw.size < 2) return null;
+  const need = Math.max(2, Math.ceil(qw.size / 8)), seen = new Set(P(s.recalled, []));
+  const mems = S.search(p.id, q, { limit: 20 }).filter((m) => ['active', 'stale'].includes(m.status) && !m.muted && m.type !== 'overview');
+  const pick = [...S.searchChapters(p.id, q, { limit: 10 }), ...S.overlap(qw, mems)]
+    .filter((x) => x.matched >= need && x.score >= 3 && !seen.has(x.id)).sort((a, b) => b.score - a.score).slice(0, 3);
+  if (!pick.length) return null;
+  run('UPDATE sessions SET recalled = ? WHERE id = ?', J([...seen, ...pick.map((x) => x.id)]), s.id);
+  return `[UAC] Saved work that may relate to this: ${pick.map((x) => `${x.id} "${clip(x.title, 70)}"`).join(' · ')} (open with uac_get before relying on memory)`;
+}
+
 // ---------- start context injected by the hook (no questions unless first run) ----------
 export function startContext(s, p, { source } = {}) {
   S.maintain(p);
@@ -300,11 +354,12 @@ export function startContext(s, p, { source } = {}) {
   if (source === 'compact' && s.loaded) {
     const l = P(s.loaded, {});
     b = bootstrap(s, p, { sessions: l.sessions, goal: l.goal, depth: l.depth, fresh: l.fresh, record: false });
+    run('UPDATE sessions SET recalled = NULL WHERE id = ?', s.id); // the hints went with the compacted conversation
     const n = S.unsavedCount(s);
     b.text = `[UAC] Context was compacted; re-loaded below. Compaction is not a UAC save${n ? `: ${n} event(s) of this session are still unsaved (the Stop hook asks for the save when it is due)` : ''}.\n\n${b.text}`;
     // this session's own saved card (the compacted conversation included it) + the snapshot of what came after it
     const mine = S.card(s.id);
-    if (mine && mine.quality !== 'auto' && mine.summary_id) b.text += `\n## This session so far (its saved card)\n${fmtCard({ ...mine, tail: null }, 'this session', { sessionId: s.id })}\n`;
+    if (mine && mine.quality !== 'auto' && mine.summary_id) b.text += `\n## This session so far (its saved card)\n${fmtCard({ ...mine, tail: null }, 'this session', { sessionId: s.id, root: p.root })}\n`;
     const snap = get(`SELECT * FROM checkpoints WHERE session_id = ? AND trigger = 'precompact' ORDER BY ts DESC LIMIT 1`, s.id);
     if (snap) b.text += `\n## ${mine?.summary_id ? 'Since that card' : 'Pre-compaction snapshot'} (unsaved)\n${fmtCard({ title: snap.goal, broken: snap.broken, files: P(snap.files, []), next_steps: P(snap.next_steps, []), note: snap.note }, 'this session')}`;
   } else b = bootstrap(s, p, { budget_tokens: START_BUDGET });
@@ -405,9 +460,11 @@ export function digest(s, maxChars = 60000) {
   // open tasks are reconciled every save (not only when their anchors changed): finished work must close its task
   const open_tasks = all(`SELECT id, title, body FROM memories WHERE project_id = ? AND type = 'task' AND status IN ('active','stale') ORDER BY updated_at DESC LIMIT 10`, s.project_id)
     .map((m) => ({ ...m, body: clip(m.body, 200) }));
+  // the project overview, so a chapter that changed what the project is (parts, version, state, docs) keeps it current
+  const overview = get(`SELECT id, body FROM memories WHERE project_id = ? AND type = 'overview' AND status IN ('active','stale') ORDER BY updated_at DESC LIMIT 1`, s.project_id) || null;
   return { session_id: s.id, branch: s.branch, goal: clip(goal || prevCard?.goal || s.title || '', 500),
     base_event_id: s.saved_event_id, upto_event_id: upto,
-    events: text, diff_stat: d.stat, recheck, open_tasks, duplicates: duplicates(s.project_id), existing, previous_chapter, open_items,
+    events: text, diff_stat: d.stat, recheck, open_tasks, duplicates: duplicates(s.project_id), existing, previous_chapter, open_items, overview,
     more: more || undefined,
     note: more ? `Paged: this digest stops at upto_event_id; ${more} later event(s) become the next chapter at the next save. Summarise only these events.` : undefined,
     how_to_save: HOW_TO_SAVE };
@@ -421,6 +478,7 @@ const HOW_TO_SAVE = [
   '  checkpoint:{goal, working, broken, files:[], next_steps:[] (only NEW open work), closed:[numbers of open_items this chapter finished], note: what I\'d tell the next dev, gaps: what you left out or did not verify} (required: goal, and next_steps or note). Open items you do not close carry forward automatically,',
   '  candidates:[{op: add|update|supersede|conflict|verify|done|noop, id? (ids:[…] with supersede merges duplicates into one), type, title, body, why?, anchors:[{file,symbol,line}], confidence}]}',
   'One candidate per recheck item (verify/update/supersede); op "done" for each open_task this session finished; merge real duplicates; durable knowledge only, no secrets. Git is not required. An incomplete card is refused and nothing is deleted.',
+  'Project overview: ONLY if this chapter changed what the project is, its parts, its current version/state or where its docs live, add ONE candidate {op:"update", id:<overview.id>, type:"overview", title:"Project overview", body} ({op:"add", type:"overview", title:"Project overview", body} if overview is null); body ≤150 words: what it is, its parts with paths, current state/version, next direction, where the docs are. Otherwise leave it.',
 ].join('\n');
 
 // Same-type memories whose words overlap strongly, clustered (a–b, b–c → one group): the reviewer merges each group into one.
@@ -490,9 +548,12 @@ export function save(s, p, { base_event_id, upto_event_id, summary, checkpoint, 
   const carried = prev?.quality === 'auto' ? [] : (prev?.next_steps || [])
     .filter((t, i) => !closed.has(i + 1))
     .map((t) => (/ \(open since ch\d+\)$/.test(t) ? t : `${t} (open since ch${prevNo})`));
-  // a still-open item the model restated in its own words stays ONE item (the carried one, with its age)
+  // a still-open item the model restated in its own words stays ONE item (the carried one, with its age). Containment, not
+  // only Jaccard: a restatement usually adds words ("… for package detection"), which Jaccard counts against it. Items of
+  // 1–2 words ("add tests") would contain half the backlog: those still need Jaccard
   const ws = (t) => new Set(bare(t).match(/[\p{L}\p{N}_]{3,}/gu) || []);
-  const newSteps = fresh.filter((f) => !carried.some((t) => S.jaccard(ws(f), ws(t)) >= 0.6));
+  const same = (a, b) => { let n = 0; for (const x of a) if (b.has(x)) n++; return (Math.min(a.size, b.size) >= 3 && n / Math.min(a.size, b.size) >= 0.8) || S.jaccard(a, b) >= 0.6; };
+  const newSteps = fresh.filter((f) => !carried.some((t) => same(ws(f), ws(t))));
   for (const n of closed) if (!(n >= 1 && n <= (prev?.next_steps?.length || 0))) res.warnings.push(`closed: ${n} is not an open item number (ignored)`);
   run('INSERT INTO summaries(id, session_id, project_id, title, body, raw_chars, created_at, quality, model, events_n, from_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
     res.summary, s.id, p.id, clip(summary.title, 200), summary.body || '', raw, now(), 'llm', model ?? null, range.n, range.t ?? now());
@@ -515,7 +576,7 @@ export function save(s, p, { base_event_id, upto_event_id, summary, checkpoint, 
       for (const id of [c.id, ...(c.ids || [])].filter(Boolean)) S.ownMemory(id, p.id); // never touch another project's memory
       if (c.anchors?.length) { const [a, notes] = S.fixAnchors(p.root, c.anchors); c.anchors = a; res.warnings.push(...notes.map((w) => `${c.title || c.id}: ${w}`)); }
       const target = c.id && S.memory(c.id);
-      if (onBranch && (op === 'update' || op === 'supersede') && target?.scope === 'project') {
+      if (onBranch && (op === 'update' || op === 'supersede') && target?.scope === 'project' && target.type !== 'overview') {
         const m = S.propose({ ...c, type: c.type || target.type, title: c.title || target.title, body: c.body ?? target.body, anchors: c.anchors || target.anchors, scope: 'branch' }, { s, p, model });
         S.relate(m.id, target.id, 'supersedes');
         res.warnings.push(`${target.id}: kept as is on the default branch; ${m.id} (branch ${s.branch}) replaces it when the branch is merged`);
@@ -562,7 +623,7 @@ export function autoCard(s) {
   const evs = all(`SELECT * FROM events WHERE session_id = ? AND id > ? AND kind != 'pending' ORDER BY id`, s.id, s.saved_event_id);
   if (!evs.length) return null;
   const prompts = evs.filter((e) => e.kind === 'prompt');
-  const files = [...new Set(evs.filter((e) => e.kind === 'tool' && isFile(e.target)).map((e) => rel(p?.root, e.target)))];
+  const files = [...new Set(evs.filter((e) => e.kind === 'tool' && isFile(e.target)).map((e) => rel(p?.root, e.target)).filter(Boolean))];
   const d = p ? diffSince(p, s) : { stat: '', files: [] };
   const allFiles = [...new Set([...d.files, ...files])].slice(0, 20);
   const fails = stillFailing(evs).slice(-3);
@@ -589,7 +650,7 @@ export function snapshot(s, trigger = 'precompact') {
   const q = (sql) => all(sql, s.id, s.saved_event_id);
   const prompts = q(`SELECT body FROM events WHERE session_id = ? AND id > ? AND kind = 'prompt' ORDER BY id`);
   const files = [...new Set(q(`SELECT target FROM events WHERE session_id = ? AND id > ? AND kind = 'tool' AND target IS NOT NULL ORDER BY id DESC LIMIT 80`)
-    .map((r) => r.target).filter(isFile).map((t) => rel(S.project(s.project_id)?.root, t)))].slice(0, 15);
+    .map((r) => r.target).filter(isFile).map((t) => rel(S.project(s.project_id)?.root, t)).filter(Boolean))].slice(0, 15);
   const fails = stillFailing(q(`SELECT id, kind, tool, target FROM events WHERE session_id = ? AND id > ? AND kind IN ('tool','tool_fail') ORDER BY id`)).slice(-3);
   const last = q(`SELECT body FROM events WHERE session_id = ? AND id > ? AND kind = 'assistant' ORDER BY id DESC LIMIT 1`)[0]?.body;
   const c = { goal: clip((trigger === 'tail' ? prompts.at(-1) : prompts[0])?.body, 300), files, note: clip(last || prompts.at(-1)?.body, 400),

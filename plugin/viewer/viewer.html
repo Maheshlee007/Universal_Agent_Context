@@ -93,7 +93,7 @@ label.mode .meta{display:block;margin-left:22px}
 'use strict';
 // No confirm()/alert()/prompt(): they are suppressed in the VS Code webview. Destructive actions use twoStep().
 const TOKEN = new URLSearchParams(location.search).get('t') || '';
-const TYPES = ['architecture','decision','constraint','requirement','lesson','warning','fact','preference','idea','task'];
+const TYPES = ['overview','architecture','decision','constraint','requirement','lesson','warning','fact','preference','idea','task'];
 const TABS = [['sessions','Sessions'],['knowledge','Knowledge'],['messages','Messages'],['project','Project']];
 const MODES = [
   ['off', 'UAC does nothing here: no context is loaded and nothing is recorded.'],

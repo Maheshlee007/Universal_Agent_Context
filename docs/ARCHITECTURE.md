@@ -173,11 +173,20 @@ Full write-up and verification: [REPORT-v0.6.md](REPORT-v0.6.md). Design: [super
   - Every LLM save is a permanent chapter, a `summaries` row with `checkpoint_id` and `from_ts`, about only its own events.
   - `card()` is the latest chapter plus its checkpoint, and `chapters(sessionId)` lists them all.
   - The digest pages at `max_chars` (`more`) and sends numbered `open_items`. `save()` carries every open item not listed in `checkpoint.closed`.
-  - `fmtCard` renders `chapter N/N`, the session goal and an index of earlier chapters. `uac_get` opens `s-` ids.
+  - `fmtCard` renders `chapter N/N`, the session goal and an index of earlier chapters (moved to the bootstrap Timeline in v0.6.3). `uac_get` opens `s-` ids.
 - **Monorepo packages.**
   - `packagesOf(root)` reads npm/pnpm/yarn workspaces and lerna. When the root has no manifest, 2 or more folders that each have one count as packages.
   - `sessions.area` comes from the cwd. A memory's package comes from its anchors (`areaOfFiles`).
   - `bootstrap` scopes a session started inside a package to its own and repo-wide items, and tags items at the root with `[in <package>]`.
+
+## v0.6.3 changes
+A new session answered "what changed between v0.5 and v0.6" from the injected summary alone and never opened a chapter. Readers are LLMs; a drill-down hint they must notice fails, so the start context now says how to use it and the hook points at saved work deterministically.
+- **`## How to use this context`** (`howTo`, `pack.mjs`): ≤ 6 lines after the ✓/⚠/✗ legend. The summaries are not the record; before a task or an answer about earlier work, `uac_search` the task's key terms and `uac_get` the related chapters/items.
+- **`## Project overview`** (`overviewText`): shown first, never clipped, ≤ ~350 tokens (subtracted from the budget). The active `overview` memory (new type; one per project: `propose` supersedes the previous one; never on the knowledge list), else a deterministic fallback: name, README's first prose paragraph, packages, `package.json` version, `docs/` REPORT/ARCHITECTURE/CHANGELOG/README files. The digest carries `overview`; the compressor updates it only when a chapter changed what the project is.
+- **`## Timeline (recent chapters, all sessions on this branch)`** (`recentChapters`, `store.mjs`) replaces the card's per-session "Earlier chapters": the last 8 chapters of every session on this branch (and branch-less ones), newest first, in the 45% card budget (the newest 3 always).
+- **Chapters are searchable** (`searchChapters`, `queryWords`, `overlap`): word overlap with stopwords, a crude stem and version prefixes (`v0.6` matches `0.6.1`); title words count double; recency breaks ties. `uac_search` appends a `chapters:` section.
+- **Prompt hint** (`relatedHint`): every prompt is scored against chapters and knowledge by its own words (no intent phrases). Only a strong match (2+ shared content words and a title hit or 3 words) injects one line, `[UAC] Saved work that may relate to this: s-… "…" · m-… "…"`, at most 3 ids, each once per session (`sessions.recalled`, reset at compaction). No bodies, no git.
+- **Fixes.** Card files outside the project root (a temp scratchpad) are dropped (`rel`); a restated open item that adds words is recognised by containment (≥ 0.8 of the smaller word set, 3+ words) as well as Jaccard.
 
 ## Known limitations
 1. **Gemini live test blocked:** headless `gemini -p` hangs on this machine even with UAC's hooks removed. The install and the adapter are unit-tested only.

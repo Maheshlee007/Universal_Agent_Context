@@ -14,6 +14,8 @@ UAC keeps project knowledge and session cards across sessions, branches and LLM 
 
 The hook injects a `# UAC <version> · <project> · branch · mode · recording` header with project knowledge, this branch's latest session card (or the ones the user chose), "must not violate" rules, other active branches, and messages. **Don't call `uac_bootstrap`. Don't ask what to load or whether to record.**
 
+The project overview, the continuing card and the `## Timeline` (latest chapters of all sessions on this branch) are summaries. Before a task, and before answering about earlier work, `uac_search` the task's own key terms and `uac_get` the related chapters (`s-…`) and items (`m-…`): decisions, failed attempts and open items live there. A `[UAC] Saved work that may relate to this: …` line at a prompt names up to 3 of them; open them before relying on memory.
+
 Only act on what the header explicitly asks:
 - **"UAC first run… Ask the user ONCE"**: ask that one mode question (off / manual / automatic), then call `uac_capture` exactly as the header says. This is the only question UAC ever asks.
 - **"ended without an LLM save… spawn the uac-compressor"**: do it when convenient, after answering the user.
