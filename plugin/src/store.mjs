@@ -760,6 +760,7 @@ export function exportProjectMd(p) {
     }
   }
   // the last session cards travel with the repo too (a clone elsewhere, or a lost ~/.uac, still has them)
+  assignSeq(p.id); // a session saved before its number was given would print as #?
   const recent = all(`SELECT s.id, s.seq, s.branch, x.title, x.body, x.created_at FROM summaries x JOIN sessions s ON s.id = x.session_id
       WHERE x.project_id = ? AND x.quality = 'llm' AND s.rolled_into IS NULL ORDER BY x.created_at DESC LIMIT 3`, p.id);
   if (recent.length) {

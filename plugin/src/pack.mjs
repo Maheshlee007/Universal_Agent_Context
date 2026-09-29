@@ -21,8 +21,8 @@ export const compressorPrompt = (sid) => `session_id=${sid}. Step 0: ToolSearch 
 // SubagentStop sends a compressor that stopped without "UAC saved:" back once, with the steps it most likely skipped
 export const COMPRESSOR_RETRY = `You have not saved yet. Step 0: ToolSearch "${TOOL_SELECT}" (if nothing is found: ToolSearch "uac_digest"); the tools exist even if you did not see them. Step 1: uac_digest with the session_id from your task. Step 2: one uac_save as its how_to_save says (git is not needed). Then reply with one line starting "UAC saved:".`;
 export const saveInstruction = (sid, host = 'claude') => host === 'claude'
-  ? `[UAC] Save requested. Spawn a subagent with the Agent tool and run_in_background: false (a background save is lost when the session exits): subagent_type "${COMPRESSOR}" (or "uac-compressor" if that is how it is listed), model "haiku", prompt "${compressorPrompt(sid)}" (a subagent keeps the digest out of this conversation). Its reply must start with "UAC saved:"; if it doesn't, or the agent/model is unavailable, call uac_digest({session_id:"${sid}"}) yourself and follow how_to_save. Then continue.`
-  : `[UAC] Save requested: call uac_digest({session_id:"${sid}"}) and follow its how_to_save (one uac_save call), in a subagent if you have one. Then continue.`;
+  ? `[UAC] Save requested. Spawn a subagent with the Agent tool and run_in_background: false (a background save is lost when the session exits): subagent_type "${COMPRESSOR}" (or "uac-compressor" if that is how it is listed), model "haiku", prompt "${compressorPrompt(sid)}" (a subagent keeps the digest out of this conversation; calling uac_digest here instead adds it to this conversation, re-sent on every later turn). Its reply must start with "UAC saved:"; if it doesn't, or the agent/model is unavailable, call uac_digest({session_id:"${sid}"}) yourself and follow how_to_save. Then continue.`
+  : `[UAC] Save requested: call uac_digest({session_id:"${sid}"}) and follow its how_to_save (one uac_save call), in a subagent if you have one (inline, the digest stays in this conversation and is re-sent on every later turn). Then continue.`;
 
 export const ago = (iso) => {
   if (!iso) return '';
@@ -268,7 +268,8 @@ export function startContext(s, p, { source } = {}) {
   if (source === 'compact' && s.loaded) {
     const l = P(s.loaded, {});
     b = bootstrap(s, p, { sessions: l.sessions, goal: l.goal, depth: l.depth, fresh: l.fresh, record: false });
-    b.text = `[UAC] Context was compacted; re-loaded below.\n\n${b.text}`;
+    const n = S.unsavedCount(s);
+    b.text = `[UAC] Context was compacted; re-loaded below. Compaction is not a UAC save${n ? `: ${n} event(s) of this session are still unsaved (the Stop hook asks for the save when it is due)` : ''}.\n\n${b.text}`;
     // this session's own saved card (the compacted conversation included it) + the snapshot of what came after it
     const mine = S.card(s.id);
     if (mine && mine.quality !== 'auto' && mine.summary_id) b.text += `\n## This session so far (its saved card)\n${fmtCard({ ...mine, tail: null }, 'this session')}\n`;
