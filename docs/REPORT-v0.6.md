@@ -1,11 +1,11 @@
-# UAC status report: v0.5.1 → v0.6.0 (2026-09-30)
+# UAC status report: v0.5.1 → v0.6.1 (2026-09-30)
 
 ## Where we are
 | Target | Installed version | Checked with |
 |---|---|---|
-| Claude Code plugin | 0.6.0 (`~/.claude/plugins/cache/uac/universal-agent-context/0.6.0/`) | `installed_plugins.json`; the new code is present in the cache |
-| VS Code extension | 0.6.0 | `code --list-extensions --show-versions`; the bundled CLI has the new code |
-| Git | `main` at `5609f48` (v0.6.0) | `git log` |
+| Claude Code plugin | 0.6.1 (`~/.claude/plugins/cache/uac/universal-agent-context/0.6.1/`) | `installed_plugins.json`; the new code is present in the cache |
+| VS Code extension | 0.6.1 | `code --list-extensions --show-versions`; the bundled CLI has the new code |
+| Git | `main` at v0.6.1 (`3cb15b4` plus docs) | `git log` |
 
 After an install, open windows need **Reload Window** (VS Code) or **/reload-plugins** (Claude Code).
 - The extension ships the plugin's plain `.mjs` files (129 KB, no dependencies).
@@ -111,3 +111,17 @@ The checks ran in parallel, each on its own isolated store, using the installed 
 | Check | Result | Evidence |
 |---|---|---|
 | Parent folder with 2 repos (`parent/r1`, `parent/r2`) plus `r1/sub` | ✅ PASS | Real SessionStart hooks: `parent`, `r1` and `r2` became 3 separate projects, and `r1/sub` mapped to `r1`. Nothing was mixed |
+| Chapters: a real session, saved, `--resume`d, saved again | ✅ PASS | 2 chapters (`s-48f39d`, 6 events; `s-7e70e1`, 17 events), each with `from_ts` and `checkpoint_id`. The badge item was closed, and the test item was carried as `(open since ch1)`. The next start showed `chapter 2/2`, `Session goal (chapter 1)` and `Earlier chapters: s-48f39d · 09-29 19:35–19:37 · … · files: Backend/src/app.ts`. `uac_get s-48f39d` returned the chapter plus its checkpoint |
+| Chapters bug: Haiku restated an open item, so it showed twice | ✅ Fixed in 0.6.1 | Word-overlap dedupe keeps the carried item; test added |
+| Package scoping (Backend/ + Frontend/, no root manifest) | ✅ PASS | Packages detected. At the root, items are tagged `[in Backend]` / `[in Frontend]`. In `Frontend/` and `Frontend/src`: header `package Frontend`, Backend item absent, "1 knowledge items about other packages". A real session in `Frontend/` listed only Frontend and repo-wide items |
+| Package bug: a dangling "Wider:" | ✅ Fixed in 0.6.1 | Now `Wider: uac_bootstrap{area:""} (whole repo, +N items of other packages)` |
+| **0.6.1** A real session at the root, told "you will only work on the Frontend" | ✅ PASS | It called `uac_bootstrap{area:"Frontend"}` itself (DB: `area = Frontend`, hook 0.6.1), got only Frontend and repo-wide knowledge, and received the Backend session's `package:Frontend` message |
+
+### 0.6.1: fe/ + be/ in one folder (your design)
+- **At the parent, the LLM is told** "Packages in this repo: `fe`, `be`. Working in only one? `uac_bootstrap{area:"fe"}`".
+  - After that call, the session is filed under `fe` and gets only fe and repo-wide context.
+  - With no call, the session keeps the whole repo, with items tagged.
+- **fe and be sessions talk** with `uac_message{to:"package:be"}`. Whole-repo sessions also receive these.
+- **Separate repos side by side** keep separate context, and `uac_message{to:"project:be"}` puts a note in the other project's inbox (shown as "in project fe").
+  - Siblings are listed in the start context only when the parent folder is itself a project (someone worked there), so a folder of unrelated projects isn't advertised.
+- Tests: 40/40.
