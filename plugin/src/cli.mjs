@@ -213,7 +213,8 @@ export async function main(argv) {
     }
     case 'view': {
       const { startViewer } = await import('./view.mjs');
-      const { url } = await startViewer({ port: Number(o.port || 0) });
+      const here = S.projectFor(cwd, { create: false });
+      const url = (await startViewer({ port: Number(o.port || 0) })).url + (here.id ? `&project=${encodeURIComponent(here.id)}` : ''); // opens on this folder's project
       out({ url }, `UAC viewer: ${url}`);
       if (!o['no-open'] && !o.json) spawnSync(process.platform === 'win32' ? 'cmd' : process.platform === 'darwin' ? 'open' : 'xdg-open',
         process.platform === 'win32' ? ['/c', 'start', '', url] : [url], { stdio: 'ignore' });
@@ -230,11 +231,14 @@ export async function main(argv) {
       const d = { node: process.version, node_ok: Number(process.versions.node.split('.')[0]) > 22 || (process.versions.node.startsWith('22.') && Number(process.versions.node.split('.')[1]) >= 13),
         db, db_bytes: size(db), wal_bytes: size(db + '-wal'), integrity: get('PRAGMA integrity_check').integrity_check, fts5: hasFts,
         project: p.root, branch: p.branch, mode: p.mode, counts: S.counts(p.id), projects: S.listProjects().length,
+        duplicate_groups: p.id ? K.duplicates(p.id).length : 0, // near-duplicate knowledge the next save will be asked to merge
         // which UAC is actually running where: this CLI, what Claude Code has installed, and what hooks/MCP last reported
         versions: (() => {
           const u = { cli: `${VERSION} (${ROOT})`, claude_installed: (() => { const c = claudeInstalled(); return c ? `${c.version} (${c.path})` : null; })() };
-          for (const k of ['hooks', 'mcp']) { const r = P(get(`SELECT value FROM settings WHERE scope = 'system' AND key = ?`, `running:${k}`)?.value, null); u[k] = r ? `${r.version} (${r.root}) at ${r.at}` : null; }
-          const vs = new Set(Object.values(u).filter(Boolean).map((x) => x.split(' ')[0]));
+          // what the most recently active session of this project was served by (each process stamps it)
+          const cs = p.id && S.currentSession(p.id);
+          if (cs) { u.session = S.shortId(cs.id); u.hooks = cs.hook_version || 'older than 0.5 (no stamp)'; u.mcp = cs.mcp_version || null; }
+          const vs = new Set(['cli', 'claude_installed', 'hooks', 'mcp'].map((k) => u[k]?.split(' ')[0]).filter((v) => /^\d+\.\d+\.\d+$/.test(v || '')));
           if (vs.size > 1) u.warning = 'versions differ: type /reload-plugins in open Claude Code sessions (or restart them)';
           return u;
         })(),
@@ -264,7 +268,7 @@ async function install(host, o, out) {
   const results = {};
   for (const h of HOSTS) {
     if (!found[h]) { results[h] = 'not found'; continue; }
-    try { const r = await one(h); results[h] = { ok: true, files: (r.files || []).map((f) => f.path), commands: (r.commands || []).map((c) => c.cmd || c) }; }
+    try { const r = await one(h); results[h] = { ok: true, files: (r.files || []).map((f) => f.path), commands: (r.commands || []).map((c) => c.cmd || c), ...(r.kept ? { kept: true } : {}), ...(r.note ? { note: r.note } : {}) }; }
     catch (e) { results[h] = { ok: false, error: e.message }; }
   }
   const vsix = fs.existsSync(path.join(ROOT, '..', 'extension')) && fs.readdirSync(path.join(ROOT, '..', 'extension')).find((f) => f.endsWith('.vsix'));

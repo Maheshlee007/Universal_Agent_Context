@@ -1,5 +1,7 @@
 # UAC internal contract (v0.1)
 
+> **Historical (v0.1–v0.2).** Tools, CLI commands and API routes here are out of date (packs, tiers, `uac choose`, `uac_timeline`, `uac_why`, `uac_checkpoint`, `uac_invalidate`, `uac_resolve`, `uac_messages` were removed in v0.5). Current: the MCP tools table in [README.md](../README.md#mcp-tools-for-agents), `plugin/src/mcp.mjs`, `uac help`, and [ARCHITECTURE.md](ARCHITECTURE.md).
+
 This file is the shared interface for everyone working on UAC. Change it only through the lead.
 
 ## Runtime

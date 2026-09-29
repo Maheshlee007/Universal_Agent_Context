@@ -1,4 +1,4 @@
-# UAC requirements checklist (v0.4, 2026-09-28)
+# UAC requirements checklist (v0.5, 2026-09-29)
 
 Every requirement and feedback point in the project, with its status and where it lives. Each ✅ was checked against the code with grep. `uac` = `node plugin/bin/uac.mjs`. Code paths are relative to `plugin/src/` unless they are given in full.
 
@@ -14,17 +14,17 @@ Every requirement and feedback point in the project, with its status and where i
 | User can view, edit and delete everything | ✅ | `uac view` dashboard, `uac session <n>`, `uac edit <id>`, `uac forget <id>`, `uac rm <n>` |
 | Choose what to load at start (all / selected / budget) | ✅ | Changed in v0.3: you pick **sessions** (`#uac continue <n…>`, `uac next <n…>`, dashboard tick); knowledge is always loaded; `#uac deep` loads more. There is no user-facing token budget, by design. |
 | Holistic project knowledge built once by a strong model, loaded by every session, updated after features land | ✅ | `uac-init-knowledge` skill (`/universal-agent-context:uac init`); loaded by `bootstrap`; kept current by the digest `recheck` + `op:verify\|update` at every save |
-| MCP server + skills so any LLM can read and update the store | ✅ | `mcp.mjs` (19 tools), `plugin/skills/*`, `docs/PROTOCOL.md` for hosts without skills |
+| MCP server + skills so any LLM can read and update the store | ✅ | `mcp.mjs` (13 tools since v0.5), `plugin/skills/*`, `docs/PROTOCOL.md` for hosts without skills |
 
 ## 2. Extra features (PLAN.md §14)
 
 | # | Feature | Status | Where / note |
 |---|---|---|---|
 | 1 | Consent, pause, inline `#uac pause` | ✅ | `hook.mjs` CONTROL |
-| 2 | Context packs for parallel sessions | ✅ | Kept for power users: `uac pack --ids`, `uac packs`, `uac_pack`. The main UI uses sessions instead. |
-| 3 | Branch knowledge promoted on merge | ✅ | `store.mjs` `maintain()` (hourly at start) |
+| 2 | Context packs for parallel sessions | ✅ (changed) | Packs were removed in v0.5. Parallel sessions pick session cards (`#uac continue <n…>`, `uac next`) and see "Other active branches". |
+| 3 | Branch knowledge promoted on merge | ✅ | `store.mjs` `promoteBranches()` (every start since v0.5; also after the branch is deleted, if its commits are in the default branch) |
 | 4 | Staleness from git | ✅ | Content hashes + anchors, `store.mjs` `freshness()`; shown as ✓ ⚠ ✗ |
-| 5 | Temporal facts: invalidate, history, undo | ⚠ | `uac_invalidate`, `memory_versions`, `GET /api/memories/:id` returns versions. No "restore old version" button in the dashboard. |
+| 5 | Temporal facts: invalidate, history, undo | ⚠ | `uac_update {status:"superseded"}` (was `uac_invalidate`), `memory_versions`, `GET /api/memories/:id` returns versions. No "restore old version" button in the dashboard. |
 | 6 | Reconciliation ADD / UPDATE / INVALIDATE / NOOP | ✅ | `uac_save` candidate ops `add\|update\|supersede\|conflict\|verify\|noop` (`pack.mjs` save) |
 | 7 | Todo carry-over at the top of the start menu | ⚠ | Next steps are in the card ("Next: …") and `task` memories are loaded as knowledge. There is no separate todo section. |
 | 8 | Decision log with the why | ✅ | `decision` memories with `why`; the "Decisions" section in `.context/PROJECT.md` |
@@ -54,9 +54,9 @@ Every requirement and feedback point in the project, with its status and where i
 | §17 Publish to Marketplace / Open VSX | ❌ | Not published. Install the `.vsix` by hand (INSTALL §5). |
 | §17 One VSIX per platform with a bundled binary | ⚠ | The VSIX bundles the `.mjs` plugin, so it needs Node ≥ 22.13 on PATH (or `uac.nodePath`) |
 | §19 `node:sqlite` driver | ✅ | `db.mjs`; no npm packages |
-| §19 `better-sqlite3` fallback driver | ❌ | Dropped: `node:sqlite` works everywhere we tested, and a native module would break the single exe |
+| §19 `better-sqlite3` fallback driver | ❌ | Dropped: `node:sqlite` works everywhere we tested, and a native module would bring back an install step |
 | §19 JSONL spool when the DB is locked | ✅ | `~/.uac/spool.jsonl`, imported on the next open (`db.mjs` spool) |
-| §19 Single executable | ⚠ | `node scripts/build-sea.mjs` → `dist/uac.exe`. Hooks, CLI, MCP and FTS5 work; the dashboard hangs (Node single-executable issue). Tested on Windows only. |
+| §19 Single executable | ❌ removed | Removed in v0.5: its dashboard hung (Node single-executable issue) and nobody shipped it. Node 22.13+ is required. |
 | §19 FTS5 missing → `LIKE` search | ✅ | `store.mjs` search (`hasFts`) |
 | §18 Database MCP server | ❌ | A separate project, parked on purpose (not part of UAC) |
 
@@ -72,13 +72,13 @@ Every requirement and feedback point in the project, with its status and where i
 | 6 | Start always asks before doing anything | ✅ | No questions except the one-time mode choice; context is injected by the hook |
 | 7 | Session titles are generic | ✅ | Auto-named from the first prompt, compressor title on save, `#uac name` / `uac name` / dashboard ✎ |
 | 8 | Checkpoints and packs pile up | ✅ | Save supersedes loaded checkpoints on the same branch; merge and rollup combine sessions |
-| 9 | Bootstrap takes one pack at a time | ✅ | `uac_bootstrap {sessions:[…], packs:[…]}`, `#uac continue 2 5` |
-| 10 | Tier descriptions are vague | ✅ | Tiers removed (old names still accepted by `uac_bootstrap`) |
-| 11 | No agent-to-agent communication | ✅ | `#uac msg`, `uac msg`, `uac_message` / `uac_messages`, dashboard Messages; delivered at the next prompt |
+| 9 | Bootstrap takes one pack at a time | ✅ | `uac_bootstrap {sessions:[…]}`, `#uac continue 2 5` (packs removed in v0.5) |
+| 10 | Tier descriptions are vague | ✅ | Tiers removed (v0.3); their leftovers and `uac choose` removed in v0.5 |
+| 11 | No agent-to-agent communication | ✅ | `#uac msg`, `uac msg`, `uac_message` (no text = read), dashboard Messages; delivered at the next prompt |
 | 12 | Memory curation is opaque | ✅ | Pin / mute / verify / edit / delete in the dashboard; `uac edit`, `uac forget` |
 | 13 | Session cleanup and cascade unclear | ✅ | `uac rm <n> [--dry-run]`, `uac rm --empty`, dashboard two-step delete; cascade in `store.mjs` deleteSession |
 | 14 | Handoff is cluttered | ✅ | `/uac handoff` (uac-handoff skill, `uac_handoff`), then `#uac continue <n>` |
-| 15 | Is SQLite verified? Locked or corrupt DB? | ✅ | `uac doctor`, `uac backup`, spool fallback; troubleshooting in INSTALL §10 |
+| 15 | Is SQLite verified? Locked or corrupt DB? | ✅ | `uac doctor`, `uac backup`, spool fallback; troubleshooting in INSTALL §9 |
 | 16 | LLM-to-LLM trust, model signature | ⚠ | `source_model` on memories and cards, shown as "(by …)"; every model gets "claims to verify". There is no special warning when the loading model differs from the writer. |
 | 17 | A whole session went uncaptured | ✅ | `#uac import`, `uac import <n>`; the start context counts sessions that weren't recorded |
 | 18 | Subagent edits aren't captured | ✅ | `git diff --stat` since `start_commit` + untracked files in the digest and the auto card (`pack.mjs` diffSince) |
@@ -109,7 +109,7 @@ Full answers are in [FAQ.md](FAQ.md).
 | What do Minimal / Relevant / Deep mean? | ✅ | Removed; FAQ explains what is loaded now |
 | Is inter-agent communication possible or needed? | ✅ | Built: `#uac msg` / `uac_message` |
 | Is `~/.uac/uac.db` real? Other options? | ✅ | `C:\Users\SRI\.uac\uac.db` (a dot folder, created on first use); spool, LIKE, backup |
-| What is the exe for; when does `uac install claude` run? | ✅ | INSTALL §3 and §8, FAQ |
+| What is the exe for; when does `uac install claude` run? | ✅ | The exe was removed in v0.5; install: INSTALL §3, FAQ |
 | Only skills show in Claude; how do `/uac …` commands work? | ✅ | `/universal-agent-context:uac <action>`, or `#uac …` everywhere |
 | Auto-review by Haiku; how does the user know what is correct? | ✅ | Compressor = reviewer, ≥ 0.7 auto-accept, only conflicts/uncertain wait; provenance + anchors + ✓⚠✗ |
 | The CLI is hard (ids, packs); use a text editor with yes/no | ✅ | Numbered commands; `uac review` y/n/e/s; `uac edit` in `$EDITOR` |
@@ -150,7 +150,7 @@ Source: [PLAN-v4.md](PLAN-v4.md). "Where" gives file + function.
 | B7 Raw events hard-deleted | ✅ (changed from plan) | `uac_get {raw:true}` / `uac session <n> --raw` read the **host's own transcript** (`rawLog`, `import.mjs`), not a UAC-side archive. The plan's `event_archive` table was dropped: the transcript is already the full-fidelity original, and a second UAC copy would extend how long sensitive text is retained |
 | B8 Knowledge store only grows | ✅ | Compressor op `supersede` with `ids:[…]` merges duplicates into one memory; `uac_digest` returns `duplicates` (Jaccard title overlap) for the reviewer (`pack.mjs`) |
 | Extra: verify on PostToolUse | ❌ skip | Freshness already recomputes from content hashes on every load; PostToolUse can't talk to the model and would add latency for no reader |
-| Extra: "why did it know that" | ✅ | Header line "Loaded: N cards · M items · ~T tokens" (`pack.mjs startContext`) |
+| Extra: "why did it know that" | ✅ | v0.5: one "Loaded … Not loaded … Wider" line (`pack.mjs bootstrap`, see §8 A4) |
 | Extra: preference `applies_when` | ✅ (instruction, no field) | Compressor/propose rules require the body to state where a preference applies; rendered under "Preferences (apply only where stated)" |
 | Extra: SessionStart should offer a choice | ✅ (kept from v0.3) | Start states the default and the one-line override; no blocking question |
 | Extra: card size vs decisions; say what was dropped | ✅ | `checkpoints.gaps` column; rendered as "Not in this card: …" (`store.mjs`, `pack.mjs`) |
@@ -166,17 +166,59 @@ Source: [PLAN-v4.md](PLAN-v4.md). "Where" gives file + function.
 | D: two windows, phantom purge race | ✅ | Purging an open phantom is harmless; its first real prompt re-creates it via `ensureSession` |
 | D: manual/off sessions with 0 events but real | ✅ | `sessions.prompts` keeps them out of the phantom query even with no recorded events |
 
-## 8. Not done, in one list
+## 8. v0.5 (uac-impromenets3.md + user asks)
+
+Source: [PLAN-v5.md](PLAN-v5.md). Code paths are relative to `plugin/src/`.
+
+| Item | Status | Where |
+|---|---|---|
+| A1 `uac_get "#2"` gave "unknown id" | ✅ | One resolver `resolveSessionRef` (`#n`, `n`, full id, 6+ char prefix, this project only) for hooks, MCP, CLI and dashboard; `sessionRefError` lists the valid sessions (`store.mjs`) |
+| A2 `#n` drifted | ✅ | `sessions.seq`, assigned once by `assignSeq` when a session stops being a phantom; `ref()` prints `#n shortid` everywhere (`store.mjs`, `db.mjs`) |
+| A3 No MCP tool lists sessions | ✅ | `uac_sessions` replaces `uac_timeline` (`mcp.mjs`) |
+| A4 Start context never says what was left out | ✅ | One "Loaded … Not loaded … Wider" line, or "Nothing else stored" (`pack.mjs bootstrap`) |
+| A5 Live or unsaved sessions invisible | ✅ | Auto cards for other sessions' unsaved work at every start; default card by last activity; "live"/"ended" labels; idle after 30 min without events (`pack.mjs startContext`, `store.mjs IDLE_MS`) |
+| A6 Sessions with no transcript are dead entries | ✅ | `raw` flag in `listSessions`; "Wider" offers raw only where it exists; `uac_get raw` falls back to the last 10 kept turns (`pack.mjs KEEP_TURNS`) |
+| A7 Scope marker missing; repo preference became global | ✅ | An explicit scope wins in `propose`; user-scope items tagged `[all projects]` (`store.mjs`, `pack.mjs`) |
+| A8 Anchor ambiguity reopened a memory from another file | ✅ | ✗ split into "file missing" / "symbol not in file"; same-named files listed as DIFFERENT files; `verifyMemory` refuses while an anchored file is missing (`store.mjs anchorHints`, `freshness`) |
+| A9 Compressor failed intermittently | ✅ | Literal ToolSearch step 0 in the agent file and the spawn prompt; SubagentStop blocks a reply without "UAC saved:"; the Stop hook asks for one retry (`agents/uac-compressor.md`, `pack.mjs compressorPrompt`, `hook.mjs`) |
+| A10 A malformed save deleted all raw events | ✅ | `invalidCard` refuses before any write; the last 10 prompt/reply events are kept (`pack.mjs save`) |
+| A11 Near-duplicate knowledge piles up | ⚠ | Clustered `duplicates` in the digest; `uac_propose` refuses a near-duplicate unless `force:true` (`store.mjs nearDuplicate`, `mcp.mjs`). The planned duplicate count in `uac doctor` is not there |
+| A12 Hooks and MCP on different versions | ✅ | Each process reads its own plugin.json; `hook_version` / `mcp_version` stamps; one "type /reload-plugins" line (`pack.mjs versionNotes`, `hook.mjs`); install never repoints to an older copy (`adapters/claude.mjs`); the extension offers Reload Window; `uac doctor` shows all versions |
+| A13 Non-git subfolder became a new project | ✅ | Nearest registered ancestor (never home or a drive root); read-only CLI commands don't register projects (`store.mjs projectFor`, `cli.mjs`) |
+| A14 Other projects' rows reachable by id | ✅ | `ownMemory` scopes reads and writes; foreign candidate ids in a save are rejected (`store.mjs`, `pack.mjs save`) |
+| A15 Compact/resume from a moved cwd loaded another project | ✅ | An existing session always uses its own project (`hook.mjs handle`) |
+| A16 The clip could cut messages already marked read | ✅ | Messages rendered before the knowledge, never clipped (`pack.mjs bootstrap`) |
+| A17 Hooks silent in Temp/claude folders | ✅ | The start context says so in one line; `UAC_ALLOW_SCRATCH=1` (`hook.mjs`, `store.mjs isScratch`) |
+| B Dashboard Refresh button | ✅ | `#refresh` (`viewer/viewer.html`) |
+| B Messages refresh every 5 s without touching the composer | ✅ | 5 s poll (`viewer.html`) |
+| B Delete a message (two-step 🗑) | ✅ | `DELETE /api/messages/:id` (`viewer.html`, `view.mjs`, `store.mjs deleteMessage`) |
+| B Scrolling message list | ✅ | Messages tab (`viewer.html`) |
+| B "Recently auto-accepted" removed | ✅ | A "new" pill on items auto-accepted in the last 7 days, inside their group (`viewer.html`) |
+| B Reload after an update | ✅ | Same as A12; README and FAQ say how |
+| B 19 MCP tools cut to 13 | ✅ | Removed `uac_pack` + packs, tiers + `uac choose`, `uac_why` + the retrieval log, `uac_checkpoint`; `uac_timeline` → `uac_sessions`; `uac_invalidate` → `uac_update`; `uac_resolve` → `uac_review`; `uac_messages` → `uac_message` (`mcp.mjs`) |
+| B Dashboard "Advanced" section, single-exe build, dead helpers | ✅ removed | `viewer.html`; `scripts/build-sea.mjs` deleted |
+| B README rewritten | ✅ | `README.md` |
+| C Inject the last ~10 raw turns at every start | ❌ declined | Every reader would pay ~1K tokens each session for a rare need. They are kept (A10); the card's "after this card" tail and `raw:true` cover it |
+| C Per-project database files | ❌ declined | The risk was retrieval scoping (A14), not SQLite. `uac backup` and PROJECT.md (now with the last cards) are the recovery path |
+| C Periodic LLM merge pass over knowledge | ❌ declined | It could silently destroy distinct facts. Write-time dedup and the save-time duplicates list cover it |
+| C Automatic `/reload-plugins` | ❌ declined | A host slash command a plugin cannot run |
+| C Merge "merge" into "rollup" | ❌ declined | The user asked for both |
+| C Remove the brainstorm and YAGNI skills | ❌ declined | The user asked for both |
+
+## 9. Not done, in one list
 - Cost meter (§14.13): the host session runs the compressor, so UAC can't see its price.
 - claude-mem / claude-remember / CLAUDE.md importers (§14.14): no demand yet.
 - `.uac/policy.yml` files (PLAN-v2 §16.4): the defaults haven't needed changing.
-- `better-sqlite3` driver: not needed, and it would break the exe.
+- `better-sqlite3` driver: not needed.
 - Marketplace / Open VSX publishing of the extension.
 - Database MCP server: a separate, parked project.
 - A CI pipeline; the scored recall@k benchmark.
-- Live tests for Gemini (headless hangs on this machine) and Codex (not installed); the exe dashboard (Node single-executable issue).
+- Live tests for Gemini (headless hangs on this machine) and Codex (not installed).
 - v0.4: verify-on-PostToolUse — freshness already comes from content hashes at load time; no call needed.
 - v0.4: anchor alternates ("any of" a memory anchors several files) — one clear anchor is enough for the rare cases seen so far.
 - v0.4: cross-client static rules files — would duplicate the live hook-injected context and go stale.
 - v0.4: a file watcher — `git diff` since session start plus `PostToolUse` already cover every edit.
 - v0.4: a UAC-side raw-event archive (`event_archive`) — replaced by reading the host transcript (`uac session <n> --raw`, `uac_get {raw:true}`), since the transcript is already the full-fidelity original and a second copy would extend retention of sensitive text.
+- v0.5: the declined items of §8 C (raw turns at every start, per-project DB files, a periodic LLM merge pass, automatic `/reload-plugins`).
+- v0.5: a squash-merged, deleted branch can't be proven merged; its knowledge stays branch-scoped.
+- v0.5: `uac doctor` doesn't count duplicate pairs yet (PLAN-v5 A11 says it does).

@@ -48,8 +48,10 @@ const RELOAD = 'Open Claude Code sessions keep the old UAC until you type /reloa
 export function install({ root, dryRun }) {
   const own = (() => { try { return JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin', 'plugin.json'), 'utf8')).version; } catch { return null; } })();
   const reg = registeredSource();
-  if (reg && own && path.resolve(reg.dir) !== path.resolve(root) && semverCmp(reg.version, own) > 0)
-    return { files: [], commands: [], note: `kept the registered UAC ${reg.version} (${reg.dir}); this copy is older (${own}), not installed` };
+  // another copy of the same or a newer version is already registered: keep it (the VS Code extension's bundle must not
+  // take over from a dev tree or a newer install, which split hooks and MCP across versions before)
+  if (reg && own && path.resolve(reg.dir) !== path.resolve(root) && semverCmp(reg.version, own) >= 0)
+    return { files: [], commands: [], kept: true, note: `kept the registered UAC ${reg.version} (${reg.dir}); this copy (${own}) is not newer, not installed` };
   const cmds = [
     ['plugin', 'marketplace', 'add', root],
     ['plugin', 'install', 'universal-agent-context@uac'],

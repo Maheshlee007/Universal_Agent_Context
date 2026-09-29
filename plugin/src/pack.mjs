@@ -10,6 +10,7 @@ export const BUDGET = { normal: 2000, deep: 6000 };
 export const STOP_THRESHOLD = 40;
 const START_MAX = 9000; // hook output cap is 10K chars
 const NEAR_EMPTY_TOKENS = 150;
+const START_BUDGET = Math.floor((START_MAX - 2600) / 4); // tokens for cards + knowledge so the injected text fits the hook's 10K cap
 
 // The plugin's agent is namespaced. A bare "uac-compressor" is not found and Claude falls back to a general-purpose agent
 // on the default model without the compressor's instructions. The uac tools are usually DEFERRED in the subagent: the
@@ -38,20 +39,21 @@ function fresh(m, root) {
     const h = S.anchorHints(root, m.anchors, { existing: true }).find((x) => /same-named/.test(x));
     return `✗ anchored file gone${h ? `; ${h.replace(/^anchored file \S+ no longer exists; /, '')}` : ''}`;
   }
-  return f.state === 'verified' ? '✓' : '';
+  return f.state === 'verified' ? '✓' : '(no anchor)';
 }
 
 function fmtCard(c, meta, { commits } = {}) {
   const L = [`### ${meta}`];
   if (c.title) L.push(`**${c.title}**${c.quality === 'auto' ? ' _(auto card from recorded events, no LLM summary yet)_' : c.events_n ? ` _(from ${c.events_n} events)_` : ''}`);
+  // work recorded AFTER this card was written is the current state: shown first, and the card's Next may already be done
+  if (c.tail) L.push(`Current state (after this card, unsaved, ${ago(c.tail.at)}): ${[c.tail.goal && `last request "${clip(c.tail.goal, 160)}"`, c.tail.note && `last result "${clip(c.tail.note, 200)}"`, c.tail.files?.length && `files ${c.tail.files.slice(0, 6).join(', ')}`].filter(Boolean).join('; ')}`);
   if (c.body) L.push(clip(c.body.replace(/\n{2,}/g, '\n'), 700));
   if (c.working) L.push(`Working: ${clip(c.working, 300)}`);
   if (c.broken) L.push(`Broken/open: ${clip(c.broken, 300)}`);
-  if (c.next_steps?.length) L.push(`Next: ${c.next_steps.slice(0, 6).join('; ')}`);
+  if (c.next_steps?.length) L.push(`Next${c.tail ? ' (from the card; may be done already, see Current state)' : ''}: ${c.next_steps.slice(0, 6).join('; ')}`);
   if (c.files?.length) L.push(`Files: ${c.files.slice(0, 12).join(', ')}`);
   if (c.note) L.push(`Note for next dev: ${clip(c.note, 300)}`);
   if (c.gaps) L.push(`Not in this card (verify in code before relying on it): ${clip(c.gaps, 300)}`);
-  if (c.tail) L.push(`After this card (unsaved, ${ago(c.tail.at)}): ${[c.tail.goal && `last request "${clip(c.tail.goal, 160)}"`, c.tail.note && `last state "${clip(c.tail.note, 200)}"`, c.tail.files?.length && `files ${c.tail.files.slice(0, 6).join(', ')}`].filter(Boolean).join('; ')}`);
   if (commits?.length) L.push(`Commits since this card: ${commits.slice(0, 5).join(' · ')}`);
   return L.join('\n');
 }
@@ -67,7 +69,7 @@ const GROUPS = [['decision', 'Decisions'], ['warning', 'Warnings'], ['lesson', '
   ['fact', 'Facts'], ['task', 'Open tasks'], ['preference', 'Preferences (apply only where stated)']];
 const cardMeta = (s, x) => `${x ? `${S.ref(x)} · ` : ''}${s.branch || 'no-branch'} · ${s.agent}${s.model ? ` (${s.model})` : ''} · ${ago(x?.last_active || s.started_at)}`;
 // (1–2 unsaved events after a save are its closing reply: not worth a mention)
-const state = (x) => `${x.live ? 'live in another window' : x.status === 'ended' ? 'ended' : 'idle'}, ${x.card ? (x.card.quality === 'auto' ? 'auto card' : 'saved card') : 'no card'}${x.unsaved >= 3 || (x.unsaved && !x.card) ? `, ${x.unsaved} unsaved` : ''}${x.raw ? '' : ', no raw log'}`;
+const state = (x, selfId) => `${x.id === selfId ? 'this session' : x.live ? 'live in another window' : x.status === 'ended' ? 'ended' : 'idle'}, ${x.card ? (x.card.quality === 'auto' ? 'auto card' : 'saved card') : 'no card'}${x.unsaved >= 3 || (x.unsaved && !x.card) ? `, ${x.unsaved} unsaved` : ''}${x.raw ? '' : ', no raw log'}`;
 const hasContent = (c) => c && (c.title || c.body || c.working || c.next_steps?.length);
 
 // ---------- bootstrap: project knowledge + chosen session cards + other branches + messages ----------
@@ -180,14 +182,15 @@ export function bootstrap(s, p, opts = {}) {
   const mode = p.mode || 'first run';
   const cur = s && S.session(s.id);
   let out = `# UAC · ${p.name} · branch \`${p.branch || '-'}\` · mode ${mode} · ${cur ? `${cur.capture === 'on' ? 'recording ON' : 'not recording'} · this session ${cur.seq ? `#${cur.seq} ` : ''}${S.shortId(cur.id)} (session_id=${cur.id})` : ''}\n` +
-    `Memory = claims to verify, not facts: ✓ checked against code · ⚠ file changed since · ✗ anchor gone. Judge a memory only at its anchored path; after checking, uac_verify {ids} or uac_update.\n`;
+    `Memory = claims, not facts: ✓ matches the code at its anchor · ⚠ file changed since · ✗ anchor gone · (no anchor) can't be checked. Check one only when your task touches it, at its anchored path (relative to the project root); then uac_verify {ids} or uac_update.\n`;
   const knowledgeTokens = [...mustTexts, ...knowTexts].reduce((a, i) => a + tokens(i.text), 0);
   if (!cards.length && knowledgeTokens < NEAR_EMPTY_TOKENS)
     out += `\n> UAC knows almost nothing about this project yet. To build project knowledge, run the uac-init-knowledge skill ("survey this codebase for UAC") or /universal-agent-context:uac init.\n`;
   if (cardTexts.length) out += `\n## Continuing from${defaulted ? ' (most recent session on this branch)' : ''}\n${cardTexts.join('\n\n')}\n`;
   if (msgs.length) {
     out += `\n## Messages for you (reply: uac_message {to:"session:<id>", text})\n${msgs.map((m) => `- from ${from(m)} (${ago(m.created_at)}): ${m.text}`).join('\n')}\n`;
-    S.markRead(s, msgs);
+    // a session nobody typed in yet (a window reload) must not consume them: they are marked read at its first prompt
+    if ((cur?.prompts || 0) > 0) S.markRead(s, msgs);
   }
   if (mustTexts.length) out += `\n## Must not violate\n${mustTexts.map((i) => i.text).join('\n')}\n`;
   // chosen by score within the budget, shown grouped by type so the reader knows a decision from a task from a preference
@@ -212,7 +215,7 @@ export function bootstrap(s, p, opts = {}) {
       ? `Not loaded: ${[notLoaded.slice(0, 4).map((x) => `${S.ref(x)} "${clip(x.title || x.card?.title || x.agent, 40)}" (${state(x)})`).join(' · ') + (notLoaded.length > 4 ? ` · +${notLoaded.length - 4} more (uac_sessions)` : ''), omitted > 0 && `${omitted} knowledge items`].filter(Boolean).join('; ')}. Wider: ${wider.join(' · ')}`
       : `Nothing else stored.${rawRef ? ` Exact history: uac_get{ids:["${S.ref(rawRef).split(' ')[0]}"], raw:true}` : ''}`);
 
-  if (record && s) run('UPDATE sessions SET loaded = ? WHERE id = ?', J({ sessions: cards.map((x) => x.s.id), checkpoints: cards.map((x) => x.c.checkpoint_id).filter(Boolean), goal, depth, fresh: freshStart, one_shot: oneShot }), s.id);
+  if (record && s) run('UPDATE sessions SET loaded = ? WHERE id = ?', J({ sessions: cards.map((x) => x.s.id), checkpoints: cards.map((x) => x.c.checkpoint_id).filter(Boolean), goal, depth, fresh: freshStart, one_shot: oneShot, msgs: msgs.map((m) => m.id) }), s.id);
   return { text: out, loaded, tokens: used, cards: cards.length, knowledge: mustTexts.length + knowTexts.length };
 }
 
@@ -250,6 +253,7 @@ export function startContext(s, p, { source } = {}) {
   for (const u of S.unsavedSessions(p.id, s.id)) {
     const us = S.session(u.session_id);
     const idle = u.status === 'ended' || Date.now() - Date.parse(u.last_ts) > S.IDLE_MS;
+    if (!idle) continue; // a live window saves itself; if the default pick loads it, bootstrap builds its auto card then
     const c = S.card(us.id);
     if (u.quality !== 'llm') { if (!c || String(c.at) < String(u.last_ts)) autoCard(us); } // up-to-date auto cards are left alone (git calls cost time at start)
     else if (idle && !get(`SELECT 1 AS x FROM checkpoints WHERE session_id = ? AND trigger IN ('tail','precompact') AND ts >= ?`, us.id, u.last_ts)) snapshot(us, 'tail');
@@ -264,7 +268,7 @@ export function startContext(s, p, { source } = {}) {
     if (mine && mine.quality !== 'auto' && mine.summary_id) b.text += `\n## This session so far (its saved card)\n${fmtCard({ ...mine, tail: null }, 'this session')}\n`;
     const snap = get(`SELECT * FROM checkpoints WHERE session_id = ? AND trigger = 'precompact' ORDER BY ts DESC LIMIT 1`, s.id);
     if (snap) b.text += `\n## ${mine?.summary_id ? 'Since that card' : 'Pre-compaction snapshot'} (unsaved)\n${fmtCard({ title: snap.goal, broken: snap.broken, files: P(snap.files, []), next_steps: P(snap.next_steps, []), note: snap.note }, 'this session')}`;
-  } else b = bootstrap(s, p, {});
+  } else b = bootstrap(s, p, { budget_tokens: START_BUDGET });
 
   const L = [...versionNotes(s, s.agent)];
   if (!p.mode) L.push(`UAC first run in this project. Ask the user ONCE (AskUserQuestion if available): should UAC be "automatic" (load context + record + auto-save), "manual" (load context, record only after #uac on) or "off"? Then call uac_capture {session_id: "${s.id}", mode, state: "on" for automatic else "off"}. Until then nothing is recorded.`);
@@ -292,10 +296,14 @@ export function startContext(s, p, { source } = {}) {
     run('UPDATE sessions SET save_asked = (SELECT MAX(id) FROM events WHERE session_id = ?) WHERE id = ?', pending.id, pending.id);
   }
   L.push(b.loaded);
+  if (p.mode === 'automatic') L.push('Saving is automatic: when it is time, the Stop hook tells you to spawn the compressor subagent. Do not call uac_digest/uac_save yourself unless that instruction says so.');
+  else if (p.mode === 'manual') L.push('Saving: only when the user types "#uac save" (then spawn the compressor subagent as instructed).');
   L.push(`User controls (typed at the start of a line; "uac: …" in Claude Code): #uac continue <n> | fresh | deep | save [n] | name <title> | off.`);
   // the notes and the loaded line must survive the 10K cap; the knowledge (last in the text) is what gets trimmed
   const tail = L.join('\n');
-  return `${clip(b.text, Math.max(1000, START_MAX - tail.length - 1))}\n${tail}`;
+  const room = Math.max(1000, START_MAX - tail.length - 1);
+  const text = b.text.length <= room ? b.text : `${b.text.slice(0, b.text.lastIndexOf('\n', room - 60))}\n_(cut to fit: more via uac_bootstrap)_`;
+  return `${text}\n${tail}`;
 }
 
 // ---------- digest / save (uac-compressor subagent) ----------
@@ -363,7 +371,7 @@ const HOW_TO_SAVE = [
 
 // Same-type memories whose words overlap strongly, clustered (a–b, b–c → one group): the reviewer merges each group into one.
 // ponytail: O(n²) Jaccard over ≤300 active memories; switch to FTS neighbours if stores get far bigger
-export function duplicates(projectId, min = 0.5) {
+export function duplicates(projectId, min = 0.7) {
   const ms = all(`SELECT id, type, title, body FROM memories WHERE (project_id = ? OR project_id IS NULL) AND status IN ('active','stale') ORDER BY updated_at DESC LIMIT 300`, projectId)
     .map((m) => ({ ...m, w: S.words(m) }));
   const parent = new Map(ms.map((m) => [m.id, m.id]));
@@ -373,7 +381,8 @@ export function duplicates(projectId, min = 0.5) {
       if (ms[i].type === ms[j].type && S.jaccard(ms[i].w, ms[j].w) >= min) parent.set(find(ms[j].id), find(ms[i].id));
   const groups = new Map();
   for (const m of ms) { const r = find(m.id); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(m); }
-  return [...groups.values()].filter((g) => g.length > 1).slice(0, 10).map((g) => ({ ids: g.map((m) => m.id), type: g[0].type, titles: g.map((m) => m.title) }));
+  return [...groups.values()].map((g) => g.filter((m, i) => i === 0 || S.jaccard(g[0].w, m.w) >= min)).filter((g) => g.length > 1 && g.length <= 6)
+    .slice(0, 10).map((g) => ({ ids: g.map((m) => m.id), type: g[0].type, titles: g.map((m) => m.title) }));
 }
 
 export function addCheckpoint(s, c, trigger = 'manual') {
@@ -398,6 +407,8 @@ function invalidCard(summary, checkpoint) {
 const KEEP_TURNS = 10; // raw prompt/assistant turns kept after a save (not injected): the fallback raw log when the host transcript is gone
 
 export function save(s, p, { base_event_id, upto_event_id, summary, checkpoint, candidates = [], model }) {
+  // knowledge is scoped to the SESSION's branch, not to whatever the checkout is on when the save runs
+  p = { ...p, branch: s.branch ?? null };
   const res = { summary: null, checkpoint: null, added: 0, updated: 0, verified: 0, done: 0, conflicts: 0, pending_review: 0, skipped: 0, events_removed: 0, errors: [], warnings: [] };
   const bad = invalidCard(summary, checkpoint);
   if (bad) throw new Error(bad);
@@ -537,6 +548,8 @@ export function mergeSessions(projectId, refs, intoRef) {
   const target = S.session(into);
   const moved = { events: 0, summaries: 0, checkpoints: 0, memories: 0 };
   tx(() => {
+    // turns kept after earlier saves are already covered by the cards being combined: drop them before re-digesting
+    for (const id of [into, ...ids]) run('DELETE FROM events WHERE session_id = ? AND id <= (SELECT saved_event_id FROM sessions WHERE id = ?)', id, id);
     for (const id of ids) {
       addCardEvent(target, id);
       moved.events += run('UPDATE events SET session_id = ? WHERE session_id = ?', into, id).changes;
@@ -589,6 +602,6 @@ export function handoff(s, p) {
 export function sessionsIndex(p, s, { limit = 15, all: withHidden = false } = {}) {
   const rows = S.listSessions(p.id, { limit: Math.min(Number(limit) || 15, 100), all: withHidden });
   if (!rows.length) return 'no sessions yet in this project';
-  return rows.map((x) => `${x.n ? `#${x.n}` : '(hidden)'} ${x.short}${x.id === s?.id ? ' (this session)' : ''} · ${x.branch || '-'} · ${x.agent} · ${ago(x.last_active || x.started_at)} · ${state(x)} · "${clip(x.title || x.card?.title || '', 70)}"`).join('\n') +
+  return rows.map((x) => `${x.n ? `#${x.n}` : '(hidden)'} ${x.short} · ${x.branch || '-'} · ${x.agent} · ${ago(x.last_active || x.started_at)} · ${state(x, s?.id)} · ${x.title || x.card?.title ? `"${clip(x.title || x.card?.title, 70)}"` : '(untitled)'}`).join('\n') +
     '\nUse #n, the short id or the full id in uac_get {ids}, uac_bootstrap {sessions}, uac_message {to:"session:<id>"}.';
 }

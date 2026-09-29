@@ -51,12 +51,9 @@ It detects Claude Code, Gemini CLI, Codex, Copilot CLI (CLI on PATH), Cursor (`c
 
 - **Command:** plugin commands are namespaced: `/universal-agent-context:uac <arg>` (e.g. `/universal-agent-context:uac save`).
 - **Inline (recommended):** type `#uac on`, `#uac save`, `#uac continue 2`… anywhere in a prompt. The hook handles it without the model.
-- **Update after `git pull`:** Claude only re-copies when the version changes. Bump `version` in `plugin/.claude-plugin/plugin.json`, then:
-  ```
-  claude plugin marketplace update uac
-  claude plugin update universal-agent-context@uac
-  ```
-  Restart Claude Code.
+- **Update after `git pull`:** Claude only re-copies when the version changes (bump `version` in `plugin/.claude-plugin/plugin.json` if you changed the code yourself). Re-run `node plugin/bin/uac.mjs install claude`: it runs `claude plugin marketplace update uac` and `claude plugin update universal-agent-context@uac` for you.
+- **Reload after an update:** open Claude Code sessions keep the old hooks and MCP server. Type `/reload-plugins` in each one (or restart it; in VS Code, "Reload Window"). New sessions use the new version. A plugin can't run `/reload-plugins` itself, so when versions differ the start context tells the agent to ask you. `uac doctor` shows the versions of the CLI, hooks, MCP server and installed plugin.
+- **Install never downgrades:** the `uac` marketplace can be registered from this clone or from the VS Code extension's bundled copy. If the registered source is a newer version at another path, `uac install` keeps it and prints `kept the registered UAC <version>`. Install from the newer copy, or remove the marketplace first, to switch.
 - Check: `claude plugin list` shows `universal-agent-context@uac`; `/mcp` shows `uac` connected.
 
 ## 5. VS Code extension
@@ -68,7 +65,7 @@ node scripts/bundle-cli.mjs
 npx @vscode/vsce package --allow-missing-repository --skip-license
 code --install-extension universal-agent-context-<version>.vsix
 ```
-`bundle-cli.mjs` copies the whole `plugin/` (CLI, hooks, skills, agents, manifests) into the extension, so it carries its own CLI, and "UAC: Install for detected tools" works from the extension alone. After an extension update, it re-runs the install automatically so hook paths follow the new version folder. It still needs Node ≥ 22.13 on PATH (or set `uac.nodePath`; `uac.cliPath` points it at another CLI).
+`bundle-cli.mjs` copies the whole `plugin/` (CLI, hooks, skills, agents, manifests) into the extension, so it carries its own CLI, and "UAC: Install for detected tools" works from the extension alone. After an extension update, it re-runs the install automatically so hook paths follow the new version folder, then offers **Reload Window** so open Claude Code sessions pick it up. It still needs Node ≥ 22.13 on PATH (or set `uac.nodePath`; `uac.cliPath` points it at another CLI).
 
 What you get:
 - **Status bar:** recording state; click to toggle.
@@ -106,16 +103,7 @@ For a tool with MCP but no hooks, add the server to its MCP config:
 ```
 Then paste [PROTOCOL.md](PROTOCOL.md) into its rules file. Without hooks nothing is injected or recorded automatically: the model calls `uac_bootstrap` at start and saves at the end, per the protocol. No MCP at all: the model can use the CLI (`node <repo>/plugin/bin/uac.mjs … --json`).
 
-## 8. Standalone exe (optional, experimental)
-
-For machines **without Node 22.13+**. Build it on a machine that has Node (first build needs network; esbuild and postject come via `npx`):
-```
-node scripts/build-sea.mjs      # → dist/uac.exe (Windows) or dist/uac
-```
-Copy it anywhere and use it like the CLI: `uac.exe install <host>` writes hooks that call the exe directly.
-**Known limitation:** `uac.exe view` (the dashboard) hangs, a Node single-executable issue. Use `node plugin/bin/uac.mjs view` for the dashboard.
-
-## 9. Verify it works
+## 8. Verify it works
 
 1. `uac doctor`: shows the Node version, DB path and size, integrity, FTS5, WAL size and the last hook errors. Everything should be green / empty.
 2. Start a session in your host inside a git repo. You should see a `# UAC · <project> · branch …` header in the context, or, on the first run in a project, one question: automatic / manual / off.
@@ -123,7 +111,7 @@ Copy it anywhere and use it like the CLI: `uac.exe install <host>` writes hooks 
 4. Type `#uac save` (Claude: or `/universal-agent-context:uac save`). You get one line: `UAC saved: "<title>" · …`.
 5. `uac sessions`: the session is listed with its card title. `uac view` opens the dashboard.
 
-## 10. Troubleshooting
+## 9. Troubleshooting
 
 - **"database is locked":** UAC sets `busy_timeout` (5 s) before enabling WAL. If it persists, a stale process holds the DB: close old `uac view` / `uac mcp` node processes (Task Manager, or `Get-Process node`), then retry.
 - **Large `uac.db-wal` file:** it's truncated on each save and at session end. To force it now, close all UAC processes and run `uac doctor` or save a session.
@@ -132,7 +120,7 @@ Copy it anywhere and use it like the CLI: `uac.exe install <host>` writes hooks 
 - **Backup:** `uac backup` writes a consistent copy (`VACUUM INTO`) to `~/.uac/backups/uac-<timestamp>.db`. Do this before any reset, and copy the backup out of `~/.uac` first.
 - **Reset:** `uac backup`, move the backup out of `~/.uac`, close all hosts and UAC processes, then delete `~/.uac` (Windows: `%USERPROFILE%\.uac`). It's recreated on next use.
 
-## 11. Uninstall
+## 10. Uninstall
 
 1. Per host, undo the entries from the table in section 3 (Claude: `claude plugin uninstall universal-agent-context@uac` and `claude plugin marketplace remove uac`).
 2. VS Code: uninstall the extension from the Extensions view.

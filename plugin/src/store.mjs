@@ -30,13 +30,15 @@ export function projectFor(cwd, { create = true } = {}) {
   const remote = normRemote(g.remote);
   let row = remote && all('SELECT * FROM projects WHERE git_remote IS NOT NULL').find((r) => normRemote(r.git_remote) === remote);
   if (!row) row = get('SELECT * FROM projects WHERE lower(root) = lower(?)', g.root);
-  if (!row && !g.commit && !g.branch) {
+  if (!row && !g.git) {
     const norm = (d) => path.resolve(d).replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
     const here = norm(g.root);
-    // never the home folder or a drive root: an agent once run there would swallow every folder below it
-    const tooBroad = (r) => norm(r) === norm(os.homedir()) || /^[a-z]:$|^$/.test(norm(r));
-    row = all('SELECT * FROM projects').filter((r) => r.root && !tooBroad(r.root) && here.startsWith(norm(r.root) + '/'))
-      .sort((a, b) => b.root.length - a.root.length)[0];
+    const rows = all('SELECT * FROM projects').filter((r) => r.root);
+    // never the home folder, a drive root, or a container of other projects (an agent once run in D:\Projects must not
+    // swallow every non-git folder below it)
+    const tooBroad = (r) => norm(r) === norm(os.homedir()) || /^[a-z]:$|^$/.test(norm(r))
+      || rows.filter((o) => norm(o.root).startsWith(norm(r) + '/')).length >= 2;
+    row = rows.filter((r) => here.startsWith(norm(r.root) + '/') && !tooBroad(r.root)).sort((a, b) => b.root.length - a.root.length)[0];
     if (row) return { ...row, branch: null, commit: null };
   }
   if (!row && !create) return { id: null, root: g.root, name: path.basename(g.root), mode: null, branch: g.branch, commit: g.commit, transient: true };
@@ -93,11 +95,23 @@ export function ensureSession({ host, session_id, cwd, transcript_path, model })
     return { s: session(session_id), created: false };
   }
   const p = projectFor(cwd);
-  run(`INSERT INTO sessions(id, project_id, agent, model, branch, start_commit, capture, transcript_path, started_at)
-       VALUES (?,?,?,?,?,?,?,?,?)`,
+  // root = the checkout this session runs in (a worktree may differ from the project's registered root)
+  run(`INSERT INTO sessions(id, project_id, agent, model, branch, start_commit, capture, transcript_path, started_at, root)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
     session_id, p.id, host, model ?? null, p.branch, p.commit,
-    p.mode === 'automatic' ? 'on' : p.mode ? 'off' : 'ask', transcript_path ?? null, now());
+    p.mode === 'automatic' ? 'on' : p.mode ? 'off' : 'ask', transcript_path ?? null, now(), gitInfo(cwd || process.cwd()).root);
   return { s: session(session_id), created: true };
+}
+
+// The project as seen by an existing session. `fresh` (session start/resume/compact): re-read branch/commit from the
+// session's own checkout. Otherwise (every prompt/tool/stop): no git calls at all, the row + the session's branch.
+export function sessionProject(s, { fresh = false } = {}) {
+  const row = project(s.project_id);
+  if (fresh) {
+    const pr = projectFor(s.root || row.root, { create: false });
+    if (pr.id === s.project_id) return pr;
+  }
+  return { ...row, branch: s.branch, commit: s.start_commit };
 }
 
 // Default session for MCP calls without session_id: the most recently ACTIVE one (a phantom from a window reload is newer
@@ -175,12 +189,14 @@ export function purgePhantoms(projectId, exceptId) {
 
 // Stable numbers: a session gets #n (sessions.seq, per project, 1, 2, 3…) once it stops being a phantom, and keeps it
 // forever. Assigned lazily in start order, so the numbering is the same in the header, tools, CLI, dashboard, extension.
+// Hooks, MCP, CLI and the dashboard all call this: one write transaction + a unique index make it race-free.
 function assignSeq(projectId) {
-  if (!projectId) return;
-  const todo = all(`SELECT s.id FROM sessions s WHERE s.project_id = ? AND s.seq IS NULL AND NOT ${PHANTOM} ORDER BY s.started_at, s.rowid`, projectId);
-  if (!todo.length) return;
-  let n = get('SELECT COALESCE(MAX(seq), 0) AS m FROM sessions WHERE project_id = ?', projectId).m;
-  for (const { id } of todo) run('UPDATE sessions SET seq = ? WHERE id = ?', ++n, id);
+  if (!projectId || !get(`SELECT 1 AS x FROM sessions s WHERE s.project_id = ? AND s.seq IS NULL AND NOT ${PHANTOM} LIMIT 1`, projectId)) return;
+  tx(() => {
+    const todo = all(`SELECT s.id FROM sessions s WHERE s.project_id = ? AND s.seq IS NULL AND NOT ${PHANTOM} ORDER BY s.started_at, s.rowid`, projectId);
+    let n = get('SELECT COALESCE(MAX(seq), 0) AS m FROM sessions WHERE project_id = ?', projectId).m;
+    for (const { id } of todo) run('UPDATE sessions SET seq = ? WHERE id = ? AND seq IS NULL', ++n, id);
+  });
 }
 const hasRaw = (p) => { try { return !!p && fs.existsSync(p); } catch { return false; } };
 
@@ -203,13 +219,14 @@ export function listSessions(projectId, { limit = 50, active, all: withRolled } 
         live: s.status !== 'ended' && Date.now() - Date.parse(last) < IDLE_MS, last_active: last,
         started_at: s.started_at, ended_at: s.ended_at, title: s.title || c?.title || null, events: s.events, unsaved: s.unsaved,
         memories_created: s.memories_created, card: c, next: next.has(s.id), rolled_into: s.rolled_into ?? null,
-        raw: hasRaw(s.transcript_path), empty: !s.events && !c && !s.memories_created };
+        raw: hasRaw(s.transcript_path) || s.events > 0, empty: !s.events && !c && !s.memories_created };
     });
 }
 // One resolver for every surface (hook controls, MCP, CLI, dashboard): full id, short id (≥6 chars, printed next to every
 // #n), or #n / n (the stable seq). Only sessions of this project resolve.
 export function resolveSessionRef(projectId, ref) {
-  const r = String(ref ?? '').trim().replace(/^#/, '');
+  // "#3 1a2b3c4d" (the printed form, copied verbatim) → "#3"
+  const r = String(ref ?? '').trim().split(/\s+/)[0].replace(/^#/, '');
   if (!r || !projectId) return null;
   if (get('SELECT id FROM sessions WHERE id = ? AND project_id = ?', r, projectId)) return r;
   if (/^\d{1,5}$/.test(r)) { assignSeq(projectId); return get('SELECT id FROM sessions WHERE project_id = ? AND seq = ?', projectId, Number(r))?.id ?? null; }
@@ -220,7 +237,8 @@ export function resolveSessionRef(projectId, ref) {
   return null;
 }
 export const resolveSessionRefs = (projectId, refs) => refs.map((r) => resolveSessionRef(projectId, r)).filter(Boolean);
-export const shortId = (id) => String(id || '').slice(0, 8);
+// 8 chars of a UUID; ids like "rollup-a1b2c3" stay whole (8 chars of them would match every rollup)
+export const shortId = (id) => (/^[a-z]+-[0-9a-f]{6}$/.test(String(id)) ? String(id) : String(id || '').slice(0, 8));
 export const ref = (x) => `#${x.seq ?? x.n ?? '?'} ${shortId(x.id)}`; // how a session is named everywhere
 // "unknown session" errors say why and list what would work, so the retry is one call
 export function sessionRefError(projectId, r) {
@@ -354,12 +372,17 @@ export function jaccard(a, b) {
   return n / (a.size + b.size - n);
 }
 // An active memory of the same type that already says (almost) the same thing: update it instead of adding another.
-export function nearDuplicate(projectId, { type, title, body }, min = 0.6) {
-  const w = words({ title, body });
+// Strict on purpose: a false positive makes the LLM overwrite a DIFFERENT memory. Tasks and ideas are templated ("Add tests
+// for login" vs "…for signup") and never deduplicated; titles must overlap too, not just the bodies.
+export function nearDuplicate(projectId, { type, title, body, scope }, min = 0.8) {
+  const t = TYPES.includes(type) ? type : 'fact';
+  if (t === 'task' || t === 'idea') return null;
+  const w = words({ title, body }), wt = words({ title });
   let best = null, score = 0;
-  for (const m of all(`SELECT id, type, title, body FROM memories WHERE (project_id = ? OR project_id IS NULL) AND status IN ('active','stale','proposed') AND type = ? ORDER BY updated_at DESC LIMIT 300`, projectId, TYPES.includes(type) ? type : 'fact')) {
+  for (const m of all(`SELECT id, type, title, body, scope FROM memories WHERE (project_id = ? OR project_id IS NULL) AND status IN ('active','stale','proposed') AND type = ? ORDER BY updated_at DESC LIMIT 300`, projectId, t)) {
+    if (scope && m.scope !== scope) continue;
     const j = jaccard(w, words(m));
-    if (j > score) { score = j; best = m; }
+    if (j > score && jaccard(wt, words({ title: m.title })) >= 0.6) { score = j; best = m; }
   }
   return score >= min ? { ...best, overlap: Math.round(score * 100) / 100 } : null;
 }
@@ -382,15 +405,18 @@ const rootOf = (m) => project(m.project_id)?.root;
 // Policy: the compressor is the reviewer. Confident, non-conflicting items are accepted in every mode;
 // only conflicts and low-confidence items wait for a human.
 export function propose(input, { s, p, via = 'llm', model }) {
-  const type = TYPES.includes(input.type) ? input.type : 'fact';
+  if (input.type && !TYPES.includes(input.type)) throw new Error(`unknown type "${input.type}"; use one of ${TYPES.join(', ')}`);
+  const type = input.type || 'fact';
   if (s && via === 'llm') {
     const n = get(`SELECT COUNT(*) AS n FROM memories WHERE source_session = ? AND source = 'llm'`, s.id).n;
     if (n >= MAX_PROPOSALS_PER_SESSION) throw new Error(`proposal limit (${MAX_PROPOSALS_PER_SESSION}) reached for this session`);
   }
   // an explicit scope wins ("in this repo use tabs" is a project preference); defaults: preference → user (all your
   // projects), work on a feature branch → branch, else project
-  const scope = ['user', 'project', 'branch'].includes(input.scope) ? input.scope
-    : type === 'preference' ? 'user' : p.branch && p.branch !== defaultBranch(p.root) ? 'branch' : 'project';
+  const feature = p.branch && p.branch !== defaultBranch(p.root);
+  let scope = ['user', 'project', 'branch'].includes(input.scope) ? input.scope
+    : type === 'preference' ? 'user' : feature ? 'branch' : 'project';
+  if (scope === 'branch' && !feature) scope = 'project'; // "branch" knowledge needs a real feature branch to belong to
   const confidence = via === 'user' ? 1 : Number(input.confidence ?? 0.7);
   const auto = via === 'user' || confidence >= AUTO_ACCEPT_CONFIDENCE;
   const status = input.status || (auto ? 'active' : 'proposed');
@@ -454,8 +480,8 @@ export function verifyMemory(id, p) {
 // Repo files: git ls-files, else a bounded walk (non-git projects), skipping dependency/build/hidden folders.
 // ponytail: 5000-file cap for the walk; only run when an anchor is actually missing
 function projectFiles(root) {
-  const tracked = git(root, 'ls-files').split(/\r?\n/).filter(Boolean);
-  if (tracked.length) return tracked;
+  const tracked = git(root, 'ls-files', '--cached', '--others', '--exclude-standard').split(/\r?\n/).filter(Boolean);
+  if (tracked.length) return tracked.filter((f) => fs.existsSync(path.join(root, f)));
   const out = [], stack = [''];
   while (stack.length && out.length < 5000) {
     const d = stack.pop();
@@ -488,8 +514,8 @@ export function anchorHints(root, anchors = [], { existing = false } = {}) {
     }
     files ??= projectFiles(root);
     const base = f.split('/').pop();
-    let cand = files.filter((x) => x.endsWith('/' + f));
-    if (!cand.length) cand = files.filter((x) => x.split('/').pop() === base);
+    let cand = files.filter((x) => x !== f && x.endsWith('/' + f));
+    if (!cand.length) cand = files.filter((x) => x !== f && x.split('/').pop() === base);
     const list = cand.slice(0, 3).join(', ') + (cand.length > 3 ? ` (+${cand.length - 3})` : '');
     if (existing) out.push(`anchored file ${f} no longer exists${cand.length ? `; ${cand.length} same-named file(s) elsewhere (${list}) are DIFFERENT files: do not verify or reopen this memory from them` : ''}`);
     else if (cand.length === 1) out.push(`anchor ${f} not found (paths are relative to the project root ${root.replace(/\\/g, '/')}); did you mean ${cand[0]}?`);
@@ -643,19 +669,26 @@ export function decayed(m) {
 // Runs at every start (cheap when there is no branch knowledge): a merge must show up in the very next session.
 export function promoteBranches(p) {
   const branches = all(`SELECT DISTINCT branch FROM memories WHERE project_id = ? AND scope = 'branch' AND branch IS NOT NULL AND status IN ('active','stale','proposed')`, p.id);
-  const def = branches.length && defaultBranch(p.root);
+  if (!branches.length) return;
+  // skip when the branch list (names + tips) is unchanged since the last check: nothing can have been merged meanwhile
+  const list = git(p.root, 'branch', '--format=%(refname:short) %(objectname:short)');
+  const key = `branches:${p.id}`;
+  if (get(`SELECT value FROM settings WHERE scope = 'system' AND key = ?`, key)?.value === list) return;
+  run(`INSERT OR REPLACE INTO settings VALUES ('system', ?, ?)`, key, list);
+  const def = defaultBranch(p.root);
   if (!def) return;
-  const merged = new Set(git(p.root, 'branch', '--merged', def, '--format=%(refname:short)').split(/\r?\n/));
-  const existing = new Set(git(p.root, 'branch', '--format=%(refname:short)').split(/\r?\n/));
+  const tips = new Map(list.split(/\r?\n/).filter(Boolean).map((l) => l.split(' ')));
+  const isAncestor = (c) => gitRaw(p.root, 'merge-base', '--is-ancestor', c, def) !== null;
   for (const { branch } of branches) {
     if (branch === def) continue;
-    let isMerged = merged.has(branch);
-    if (!isMerged && !existing.has(branch)) {
-      const commits = all(`SELECT DISTINCT COALESCE(verified_commit, source_commit) AS c FROM memories WHERE project_id = ? AND scope = 'branch' AND branch = ?`, p.id, branch).map((r) => r.c).filter(Boolean);
-      isMerged = commits.length > 0 && commits.every((c) => gitRaw(p.root, 'merge-base', '--is-ancestor', c, def) !== null);
-      // ponytail: a squash-merged, deleted branch can't be proven merged; its knowledge stays branch-scoped (not lost, not loaded elsewhere)
-    }
-    if (!isMerged) continue;
+    // merged = the branch's tip moved past where its sessions started (it had work of its own) and is now in the default
+    // branch. A branch with no commits of its own is "merged" by git's definition, but nothing of it landed.
+    // A deleted branch: its tip is the last HEAD a session on it saw (sessions.end_commit).
+    const ss = all(`SELECT start_commit, end_commit FROM sessions WHERE project_id = ? AND branch = ? ORDER BY started_at`, p.id, branch);
+    const starts = new Set(ss.map((x) => x.start_commit).filter(Boolean));
+    const tip = tips.get(branch) || ss.map((x) => x.end_commit).filter(Boolean).at(-1);
+    // ponytail: a squash-merged branch never proves merged (its commits aren't in main); its knowledge stays branch-scoped
+    if (!tip || [...starts].some((c) => c.startsWith(tip) || tip.startsWith(c)) || !isAncestor(tip)) continue;
     for (const r of all(`SELECT r.a, r.b FROM memory_relations r JOIN memories m ON m.id = r.a WHERE m.project_id = ? AND m.scope = 'branch' AND m.branch = ? AND r.rel = 'supersedes'`, p.id, branch)) {
       const old = memory(r.b);
       if (old && old.scope === 'project' && ['active', 'stale'].includes(old.status)) updateMemory(r.b, { status: 'superseded' }, { by: 'merge', reason: `replaced by ${r.a} when ${branch} was merged` });

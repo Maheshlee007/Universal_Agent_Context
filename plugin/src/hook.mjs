@@ -4,7 +4,7 @@ import path from 'node:path';
 import { run, get, home, spool, now, checkpointWal, P } from './db.mjs';
 import * as S from './store.mjs';
 import * as K from './pack.mjs';
-import { clip, redact, target, enableGitCache, VERSION } from './util.mjs';
+import { clip, redact, target, enableGitCache, VERSION, git, claudeInstalled, semverCmp } from './util.mjs';
 import { adapters } from './adapters/index.mjs';
 import { importTranscript } from './import.mjs';
 
@@ -84,8 +84,9 @@ export function handle(ev) {
     return {};
   }
   const { s, created } = S.ensureSession(ev);
-  // an existing session always belongs to its own project, even when the agent cd'd into another folder
-  const p = created ? S.projectFor(ev.cwd) : S.projectFor(S.project(s.project_id).root);
+  // an existing session always belongs to its own project, even when the agent cd'd into another folder; only a start
+  // (new/resume/compact) reads git, the per-event hooks don't (git spawns cost ~100 ms each on Windows)
+  const p = created ? S.projectFor(ev.cwd) : S.sessionProject(s, { fresh: ev.event === 'start' });
   run('UPDATE sessions SET hook_version = ? WHERE id = ? AND COALESCE(hook_version, \'\') != ?', VERSION, s.id, VERSION);
 
   switch (ev.event) {
@@ -101,10 +102,18 @@ export function handle(ev) {
       if (needStart) out.push(K.startContext(s, p));
       // the first real prompt makes the session real: count it (no text) and consume one-shot "continue from" picks it loaded
       run('UPDATE sessions SET prompts = COALESCE(prompts, 0) + 1, last_active_at = ? WHERE id = ?', now(), s.id);
-      if (!s.prompts && P(S.session(s.id).loaded, {}).one_shot) S.setNextSessions(p.id, []);
+      if (!s.prompts) {
+        const l = P(S.session(s.id).loaded, {});
+        if (l.one_shot) S.setNextSessions(p.id, []);
+        if (l.msgs?.length) S.markRead(s, l.msgs.map((id) => ({ id }))); // shown in the start context, now actually delivered
+      }
       // the MCP server of this session turned out to run another version (it stamps the session on its first tool call)
       const v = S.session(s.id);
-      if (v.mcp_version && v.mcp_version !== VERSION && !v.ver_warned) {
+      const inst = s.agent === 'claude' && !v.ver_warned ? claudeInstalled() : null;
+      if (inst && semverCmp(inst.version, VERSION) > 0) {
+        out.push(`[UAC] ⚠ UAC ${inst.version} is installed but this session still runs ${VERSION}. Tell the user: type /reload-plugins (or restart the session).`);
+        run('UPDATE sessions SET ver_warned = 1 WHERE id = ?', s.id);
+      } else if (v.mcp_version && v.mcp_version !== VERSION && !v.ver_warned) {
         out.push(`[UAC] ⚠ This session's MCP server runs UAC ${v.mcp_version} but its hooks run ${VERSION}. Tell the user: /reload-plugins or restart the session.`);
         run('UPDATE sessions SET ver_warned = 1 WHERE id = ?', s.id);
       }
@@ -159,6 +168,8 @@ export function handle(ev) {
 
     case 'stop': {
       if (s.capture === 'on' && ev.last_message && !ev.stop_hook_active) S.addEvent(s, 'assistant', { body: clip(ev.last_message, 1200) });
+      // where this session's branch stands now: tells a merged branch (tip moved, then landed in main) from one never worked on
+      if (!ev.stop_hook_active && s.branch) { const h = git(s.root || p.root, 'rev-parse', '--short', '-q', '--verify', 'HEAD'); if (h) run('UPDATE sessions SET end_commit = ? WHERE id = ?', h, s.id); }
       if (s.capture !== 'on' || p.mode !== 'automatic' || ev.stop_hook_active) return {};
       if (S.unsavedCount(s) < K.STOP_THRESHOLD) {
         // this session doesn't need a save yet: finish an earlier session that ended unsaved (once, marked on that session)

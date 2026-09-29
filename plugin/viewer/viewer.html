@@ -101,7 +101,7 @@ const MODES = [
   ['automatic', 'Knowledge loads at start, and every session is recorded and saved into a session card automatically.'],
 ];
 const main = document.getElementById('main');
-let project = localStorage.getItem('uac.project') || '';
+let project = new URLSearchParams(location.search).get('project') || localStorage.getItem('uac.project') || ''; // ?project=<id> opens that project
 let projects = [];
 let tab = 'sessions';
 let seq = 0;             // render generation; stale async renders bail out
@@ -379,7 +379,12 @@ const VIEWS = {
         h('pre', null, str(m.text)))) : [empty('No messages yet.')]));
     };
     draw(msgs);
-    pollFn = () => api(P('/api/messages')).then(r => { if (list.isConnected) draw(r); }).catch(() => {});
+    // redraw only when something changed, and never while a 🗑 is armed (a redraw would disarm it mid-confirm)
+    let sig = JSON.stringify(msgs.map(m => [m.id, m.reads]));
+    pollFn = () => api(P('/api/messages')).then(r => {
+      const s2 = JSON.stringify(r.map(m => [m.id, m.reads]));
+      if (list.isConnected && s2 !== sig && !list.querySelector('.armed')) { sig = s2; draw(r); }
+    }).catch(() => {});
   },
 
   async project(out, live) {
@@ -452,7 +457,7 @@ function sessionCard(s, nextIds, reload, { onPick, byId }) {
     titleEl.replaceWith(inp); inp.focus(); inp.select();
   };
   const body = h('div');
-  const cap = s.capture === 'on' ? pill('● recording', 'ok') : s.capture === 'paused' ? pill('paused', 'warn') : pill('not recording');
+  const cap = s.status === 'ended' ? pill('ended') : s.capture === 'on' ? pill('● recording', 'ok') : s.capture === 'paused' ? pill('paused', 'warn') : pill('not recording');
   const toggle = () => {
     if (openCards.has(s.id)) { openCards.delete(s.id); body.replaceChildren(); if (focusSess === s.id) focusSess = null; }
     else { openCards.add(s.id); focusSess = s.id; fillBody(s, body); }

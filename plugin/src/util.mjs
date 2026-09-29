@@ -112,13 +112,15 @@ export function gitRaw(cwd, ...args) {
   return r.status === 0 ? r.stdout : null;
 }
 
+// `git: true` = inside a git repo, also right after `git init` with no commit yet (unborn HEAD): --show-toplevel alone works
+// there, while combined with --abbrev-ref HEAD it fails and the repo looked like a plain folder.
 export function gitInfo(cwd) {
-  const [root, branch] = git(cwd, 'rev-parse', '--show-toplevel', '--abbrev-ref', 'HEAD').split(/\r?\n/);
-  if (!root) return { root: path.resolve(cwd), branch: null, commit: null, remote: null };
+  const root = git(cwd, 'rev-parse', '--show-toplevel');
+  if (!root) return { root: path.resolve(cwd), branch: null, commit: null, remote: null, git: false };
   return {
-    root: path.resolve(root),
-    branch: branch && branch !== 'HEAD' ? branch : null,
-    commit: git(cwd, 'rev-parse', '--short', 'HEAD') || null,
+    root: path.resolve(root), git: true,
+    branch: git(cwd, 'symbolic-ref', '--short', '-q', 'HEAD') || null,
+    commit: git(cwd, 'rev-parse', '--short', '-q', '--verify', 'HEAD') || null,
     remote: git(cwd, 'config', '--get', 'remote.origin.url') || null,
   };
 }

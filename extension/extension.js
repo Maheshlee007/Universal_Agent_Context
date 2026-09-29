@@ -370,7 +370,9 @@ async function reinstallIfUpdated(context) {
   const was = context.globalState.get('uac.installedVersion');
   const now = context.extension.packageJSON.version;
   if (!was || was === now) return;
-  try { await uac(['install']); context.globalState.update('uac.installedVersion', now); } catch { return; /* keep old paths; user can run UAC: Install */ }
+  let r;
+  try { r = await uac(['install']); context.globalState.update('uac.installedVersion', now); } catch { return; /* keep old paths; user can run UAC: Install */ }
+  if (r?.claude?.kept) return; // a same-or-newer UAC was already registered for Claude Code: nothing changed there, no reload needed
   // running Claude Code sessions keep the old hooks/MCP server until reloaded: offer it instead of leaving them stale
   const a = await vscode.window.showInformationMessage(`UAC updated to ${now}. Reload the window so open Claude Code sessions use it (or type /reload-plugins in each).`, 'Reload Window');
   if (a) vscode.commands.executeCommand('workbench.action.reloadWindow');

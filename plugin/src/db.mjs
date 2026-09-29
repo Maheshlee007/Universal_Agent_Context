@@ -86,13 +86,14 @@ const V3_COLUMNS = [
   ['checkpoints', 'gaps TEXT'],
   // v0.5: seq = stable per-project session number (#n never moves); hook/mcp_version = which UAC served this session;
   // save_retry = the save request (event id) we already asked to retry once
-  ['sessions', 'seq INTEGER'], ['sessions', 'hook_version TEXT'], ['sessions', 'mcp_version TEXT'], ['sessions', 'save_retry INTEGER DEFAULT 0'], ['sessions', 'ver_warned INTEGER DEFAULT 0'],
+  ['sessions', 'seq INTEGER'], ['sessions', 'hook_version TEXT'], ['sessions', 'mcp_version TEXT'], ['sessions', 'save_retry INTEGER DEFAULT 0'], ['sessions', 'ver_warned INTEGER DEFAULT 0'], ['sessions', 'end_commit TEXT'], ['sessions', 'root TEXT'],
 ];
 function migrate() {
   for (const [t, col] of V3_COLUMNS) { try { db.exec(`ALTER TABLE ${t} ADD COLUMN ${col}`); } catch { /* exists */ } }
   db.exec(`CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, project_id TEXT, from_session TEXT, from_agent TEXT,
       from_branch TEXT, recipient TEXT, text TEXT, created_at TEXT);
     CREATE TABLE IF NOT EXISTS message_reads(message_id TEXT, session_id TEXT, PRIMARY KEY(message_id, session_id));
+    CREATE UNIQUE INDEX IF NOT EXISTS sessions_seq ON sessions(project_id, seq) WHERE seq IS NOT NULL;
 `);
 }
 

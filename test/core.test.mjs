@@ -459,7 +459,7 @@ test('v0.5: stable #n + refs, save validation, project scoping, non-git subfolde
   for (const r of [`#${me.n}`, String(me.n), me.short, 'sess-v5']) assert.equal(S.resolveSessionRef(pid(), r), 'sess-v5', r);
   const bad = await callTool('uac_get', { ids: ['#999'] });
   assert.match(bad[0].error, /no session "#999"[\s\S]*#\d+ \S+ "/, 'the error lists valid refs');
-  assert.match(await callTool('uac_sessions', {}), new RegExp(`#${me.n} ${me.short} \\(this session\\)`));
+  assert.match(await callTool('uac_sessions', { session_id: 'sess-v5' }), new RegExp(`#${me.n} ${me.short} · .* · this session,`));
 
   // an incomplete card is refused and deletes nothing
   for (let i = 0; i < 3; i++) hook('PostToolUse', { session_id: 'sess-v5', tool_name: 'Edit', tool_input: { file_path: 'src/auth.js' }, tool_response: 'e' });
@@ -470,7 +470,10 @@ test('v0.5: stable #n + refs, save validation, project scoping, non-git subfolde
   // near-duplicates are refused with the id to update; another project's memory is out of reach
   const orig = await callTool('uac_propose', { session_id: 'sess-v5', type: 'fact', title: 'Login form posts to /api/login with JSON', body: 'The login form posts JSON to /api/login', confidence: 0.9 });
   const origId = orig.match(/m-[0-9a-f]+/)[0];
-  assert.match(await callTool('uac_propose', { session_id: 'sess-v5', type: 'fact', title: 'Login form posts JSON to /api/login', body: 'The login form posts JSON to /api/login endpoint', confidence: 0.9 }), new RegExp(`near-duplicate of ${origId}`));
+  assert.match(await callTool('uac_propose', { session_id: 'sess-v5', type: 'fact', title: 'Login form posts to /api/login with JSON', body: 'The login form posts JSON to the /api/login endpoint', confidence: 0.9 }), new RegExp(`possible duplicate of ${origId}`));
+  // templated tasks are different work, never "duplicates"
+  await callTool('uac_propose', { session_id: 'sess-v5', type: 'task', title: 'Add tests for login', body: 'Write unit tests for the login form validation', confidence: 0.9 });
+  assert.match(await callTool('uac_propose', { session_id: 'sess-v5', type: 'task', title: 'Add tests for signup', body: 'Write unit tests for the signup form validation', confidence: 0.9 }), /saved as active/);
   const other = path.join(tmp, 'other-v5'); fs.mkdirSync(other);
   const po = S.projectFor(other);
   const foreign = S.propose({ type: 'decision', title: 'Other project secret decision', body: 'x', why: 'y', confidence: 0.9 }, { p: po });
