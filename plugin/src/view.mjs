@@ -26,6 +26,7 @@ function health(pid) {
   };
 }
 const notFound = () => { throw Object.assign(new Error('not found'), { code: 404 }); };
+const ATTACH = Symbol('attachment filename');
 
 const routes = [
   ['GET', /^\/api\/projects$/, () => S.listProjects()],
@@ -70,6 +71,17 @@ const routes = [
   ['GET', /^\/api\/messages$/, (q) => S.listMessages(q.project)],
   ['DELETE', /^\/api\/messages\/([^/]+)$/, (q, b, id) => ({ ok: S.deleteMessage(id) })],
   ['POST', /^\/api\/messages$/, (q, b) => { const pr = S.project(q.project) || notFound(); return S.postMessage(null, pr, b.text, b.to || 'all'); }],
+  ['GET', /^\/api\/timeline$/, (q) => S.timeline(q.project)],
+  ['GET', /^\/api\/chapter\/([^/]+)$/, (q, b, id) => S.chapter(id) || notFound()],
+  // a download; ?save=1 writes it into the project folder instead (the VS Code webview blocks downloads)
+  ['GET', /^\/api\/export$/, (q) => {
+    const pr = S.project(q.project) || notFound(), name = S.bundleName(pr), data = S.exportBundle(pr);
+    if (!q.save) return { [ATTACH]: name, data };
+    const file = path.join(pr.root, name);
+    fs.writeFileSync(file, JSON.stringify(data, null, 1));
+    return { file };
+  }],
+  ['POST', /^\/api\/import$/, (q, b) => S.importBundle(S.project(q.project) || notFound(), b)],
   ['GET', /^\/api\/health$/, (q) => health(q.project)],
   ['GET', /^\/api\/settings$/, (q) => ({ mode: S.project(q.project)?.mode ?? null })],
   ['PUT', /^\/api\/settings$/, (q, b) => { S.setMode(q.project, b.mode); return { mode: b.mode }; }],
@@ -102,7 +114,10 @@ export function startViewer({ port = 0, token = crypto.randomBytes(12).toString(
       try { body = raw ? JSON.parse(raw) : {}; } catch { return send(400, { error: 'bad json' }); }
     }
     try {
-      send(200, route[2](Object.fromEntries(url.searchParams), body, ...(url.pathname.match(route[1]).slice(1).map(decodeURIComponent))));
+      const r = route[2](Object.fromEntries(url.searchParams), body, ...(url.pathname.match(route[1]).slice(1).map(decodeURIComponent)));
+      if (!r?.[ATTACH]) return send(200, r);
+      res.writeHead(200, { 'content-type': 'application/json', 'content-disposition': `attachment; filename="${r[ATTACH]}"`, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+      res.end(JSON.stringify(r.data, null, 1));
     } catch (e) { send(e.code === 404 ? 404 : 400, { error: e.message }); }
   });
   return new Promise((resolve, reject) => {

@@ -150,6 +150,10 @@ CLI:
 | POST `/api/memories/:id/resolve` | `{action, body?}` | memory. Server records resolved_by='user-dashboard' |
 | GET `/api/messages?project=ID` | | `[{id, from_session, from_agent, from_branch, to, text, created_at, reads}]` |
 | POST `/api/messages?project=ID` | `{text, to:'all'\|'branch:<name>'\|'session:<id>'}` | message |
+| GET `/api/timeline?project=ID` | | `[{id, session:'#n short', session_id, branch, area, from_ts, at, events_n, title, files, pre}]`: every chapter, newest first, 300 max (v0.6.4) |
+| GET `/api/chapter/:id` | | `{project_id, chapter:{id,no,title,body,from_ts,at,events_n,model,pre}, checkpoint:{goal,working,broken,files,next_steps,note,gaps,ts}\|null}` |
+| GET `/api/export?project=ID[&save=1]` | | the share bundle as an attachment (`uac-<project>-<YYYYMMDD>.json`); `save=1` writes it into the project folder and returns `{file}` |
+| POST `/api/import?project=ID` | a share bundle | `{from, memories_added, memories_updated, sessions_added, chapters_added, skipped, warning?}` |
 
 **memory** gains: `anchors:[{file,symbol,line}]`, `muted`, `source_model`, `resolved_by`, `resolved_at`, `last_verified_at`, `verified_commit`, `freshness:{state:'verified'\|'changed'\|'missing'\|'unknown', commits_since:number}`.
 

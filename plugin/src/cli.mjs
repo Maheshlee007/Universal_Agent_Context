@@ -30,9 +30,12 @@ usage: uac <command> [options] [--json] [--cwd DIR]
   review                         decide low-confidence proposals & conflicts (interactive: y/n/e/s)
   edit <id> | forget <id…>       edit a memory in $EDITOR / hard-delete memories
   import [n|id]                  recover an unrecorded session from its host transcript
+  import <file.json>             import a coworker's share bundle into this project (run it in your clone)
+  export                         regenerate .context/PROJECT.md
+  export --bundle [--out <file>] [--with-events]   share bundle of this project's knowledge + session chapters (not uac.db)
   msg "<text>" [--to all|branch:<b>|session:<id>|package:<p>|project:<name>]    msgs    cross-agent notes
   projects | projects merge <from> <into> | projects rm <id>
-  view [--port N] [--no-open]    dashboard            export   regenerate .context/PROJECT.md
+  view [--port N] [--no-open]    dashboard
   install [host] [--dry-run]     no host = detect installed tools (${HOSTS.join(', ')}, VS Code)
   doctor | backup                health check / copy the database to ~/.uac/backups
   hook <host> <event> | mcp      (called by hosts)`;
@@ -67,7 +70,8 @@ export async function main(argv) {
       'dry-run': { type: 'boolean' }, active: { type: 'boolean' }, type: { type: 'string' }, status: { type: 'string' },
       ids: { type: 'string' }, name: { type: 'string' }, next: { type: 'boolean' }, clear: { type: 'boolean' },
       empty: { type: 'boolean' }, yes: { type: 'boolean' }, to: { type: 'string' }, sessions: { type: 'string' },
-      into: { type: 'string' }, all: { type: 'boolean' }, branch: { type: 'string' } },
+      into: { type: 'string' }, all: { type: 'boolean' }, branch: { type: 'string' },
+      bundle: { type: 'boolean' }, out: { type: 'string' }, 'with-events': { type: 'boolean' } },
   });
   const out = (data, text) => console.log(o.json ? JSON.stringify(data, null, 1) : (text ?? (typeof data === 'string' ? data : JSON.stringify(data, null, 1))));
   const cwd = o.cwd || process.cwd();
@@ -193,6 +197,12 @@ export async function main(argv) {
     case 'edit': return edit(args[0], out);
     case 'import': {
       const p = proj();
+      const file = args[0] && /\.json$/i.test(args[0]) && path.resolve(cwd, args[0]);
+      if (file && fs.existsSync(file)) { // a coworker's share bundle (uac export --bundle)
+        const r = S.importBundle(p, JSON.parse(fs.readFileSync(file, 'utf8')));
+        return out(r, `imported from ${r.from || '?'} into ${p.name}: ${r.memories_added} memories added, ${r.memories_updated} updated, ${r.sessions_added} sessions, ${r.chapters_added} chapters` +
+          ` (${r.skipped} already here)${r.warning ? `\nwarning: ${r.warning}` : ''}`);
+      }
       const id = args[0] ? S.resolveSessionRefs(p.id, args)[0]
         : get(`SELECT id FROM sessions WHERE project_id = ? AND capture IN ('off','ask') AND transcript_path IS NOT NULL ORDER BY started_at DESC LIMIT 1`, p.id)?.id;
       if (!id) throw new Error('no session to import (give its number from "uac sessions")');
@@ -219,7 +229,13 @@ export async function main(argv) {
       const rows = S.listProjects();
       return out(rows, rows.map((r) => `${r.id}  ${r.name.padEnd(28)} ${String(r.sessions).padStart(4)} sessions ${String(r.memories).padStart(4)} memories  mode=${r.mode || '-'}  ${r.root}${r.git_remote ? `  (${r.git_remote})` : ''}`).join('\n'));
     }
-    case 'export': { const f = S.exportProjectMd(proj()); return out({ ok: true, file: f }, `wrote ${f}`); }
+    case 'export': {
+      const p = proj();
+      if (!o.bundle) { const f = S.exportProjectMd(p); return out({ ok: true, file: f }, `wrote ${f}`); }
+      const f = path.resolve(cwd, o.out || S.bundleName(p));
+      fs.writeFileSync(f, JSON.stringify(S.exportBundle(p, { events: !!o['with-events'] }), null, 1));
+      return out({ ok: true, file: f }, `wrote ${f}\n${o['with-events'] ? 'contains knowledge, session chapters and the raw events (prompts included)' : 'contains knowledge and session chapters; no raw prompts unless --with-events'}`);
+    }
     case 'backup': {
       const dir = path.join(home(), 'backups');
       fs.mkdirSync(dir, { recursive: true });

@@ -93,6 +93,8 @@ const V3_COLUMNS = [
   ['sessions', 'area TEXT'],
   // v0.6.3: ids (s-/m-) already pointed at by the prompt-time hint in this session: never hinted twice
   ['sessions', 'recalled TEXT'],
+  // v0.6.4: where a session came from when it arrived in a share bundle ("import:<project>@<date>"); null = recorded here
+  ['sessions', 'origin TEXT'],
 ];
 function migrate() {
   for (const [t, col] of V3_COLUMNS) { try { db.exec(`ALTER TABLE ${t} ADD COLUMN ${col}`); } catch { /* exists */ } }

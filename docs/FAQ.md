@@ -250,6 +250,13 @@ Yes, and no package is needed. UAC uses `node:sqlite`, built into Node 22.13+. `
 ### One database for all projects: can one project see another's data?
 No. Every read and write is scoped to the current project, including lookups by id. A save that names another project's memory is rejected. User-scope items (`[all projects]`) are shared on purpose. `.context/PROJECT.md` in each repo holds its knowledge and the last 3 session cards, and `uac backup` copies the whole DB.
 
+### How do I give a coworker this project's memory?
+- Run `uac export --bundle` in the repo (or **Export bundle** on the dashboard's Project tab) and send them the `uac-<project>-<date>.json` file. They run `uac import <file.json>` inside their clone, or pick the file on their dashboard.
+- The bundle holds this project only: all its memories (with their history), the saved chapters and checkpoints of its sessions, session metadata and messages. Raw prompts and tool events are left out unless you add `--with-events`.
+- Don't copy `~/.uac/uac.db`: it holds every project on your machine, with absolute paths and raw prompts, and it would overwrite theirs.
+- Imported sessions get the next `#n` in their project and show `· imported`. Importing the same file again adds nothing. For a memory you both have, the newer edit wins.
+- In the VS Code panel, which can't download files, **Export bundle** writes the file into the project folder and shows the path. Don't commit it.
+
 ### What if SQLite doesn't work?
 - If the database is **locked**, hooks write events to `~/.uac/spool.jsonl`. They are imported the next time the database opens.
 - If FTS5 is missing, search falls back to `LIKE`.

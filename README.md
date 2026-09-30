@@ -152,6 +152,7 @@ In Claude Code the same actions exist as `/universal-agent-context:uac <action>`
 | `uac edit <id>` / `uac forget <id…>` | Edit a memory in `$EDITOR` / hard-delete memories |
 | `uac msg "<text>" --to branch:<b>` / `uac msgs` | Send / list messages |
 | `uac import [n]` | Recover an unrecorded session from its host transcript |
+| `uac export --bundle` / `uac import <file.json>` | Write a share bundle of this project / import a coworker's bundle |
 | `uac projects` / `uac projects merge <from> <into>` | List / join duplicate projects |
 | `uac view` | Dashboard |
 | `uac export` / `uac backup` / `uac doctor` | Rewrite `.context/PROJECT.md` / copy the DB / health check |
@@ -160,10 +161,10 @@ Every command takes `--json` and `--cwd DIR`.
 
 ## Dashboard
 `uac view` (or the UAC panel in VS Code). A **⟳ Refresh** button reloads everything.
-- **Sessions:** one card per session with pills (live, auto card, N unsaved, no raw log, empty · can delete). "Continue from this in next session", rename, two-step delete, merge, roll up, "Delete empty sessions".
+- **Sessions:** one card per session with pills (live, auto card, N unsaved, no raw log, empty · can delete). "Continue from this in next session", rename, two-step delete, merge, roll up, "Delete empty sessions". **Timeline** lists every saved chapter of every session, newest first; click one to open it.
 - **Knowledge:** grouped by type in an accordion, one group open at a time, with ✓/⚠/✗ counts per group. Pin, mute, verify, edit, delete. Items accepted automatically in the last 7 days carry a **new** pill, so you can check them where they are. "Needs your decision" holds conflicts and low-confidence items.
 - **Messages:** a scrolling list that refreshes itself every 5 s without touching what you are typing. Send a message, or delete one with 🗑 (two steps).
-- **Project:** mode, the project list, merge and delete projects.
+- **Project:** mode, **Export bundle** / import a bundle (share with a coworker), the project list, merge and delete projects.
 
 ## MCP tools (for agents)
 The hook already injects the start context. Agents use these tools for more:
@@ -202,6 +203,13 @@ The hook already injects the start context. Agents use these tools for more:
 - `uac backup` writes a copy to `~/.uac/backups/`.
 
 **Privacy.** Everything stays on your machine. Stored text is redacted before it is written: secrets, `<private>…</private>` blocks, e-mail addresses and IPs. The redaction keeps code such as `token: string`. `.uacignore` (plus defaults such as `.env*` and `*.pem`) hides file targets. `uac forget` and the dashboard delete for real.
+
+## Share with a coworker
+1. In the repo, run `uac export --bundle` (or **Export bundle** on the dashboard's Project tab). It writes `uac-<project>-<YYYYMMDD>.json`: this project's knowledge and session chapters. Raw prompts are left out unless you add `--with-events`.
+2. Send the file.
+3. They run `uac import <file.json>` inside their clone (or pick the file on their dashboard). Imported sessions get the next numbers there and show `· imported`. Importing the same file twice adds nothing; a memory both of you have keeps the newer edit.
+
+Don't send `~/.uac/uac.db` instead: it holds every project on your machine, with absolute paths and raw prompts, and it would replace their own database.
 
 ## Limits
 - A plugin can't run `/reload-plugins`. After an update, you type it (or reload the window). UAC tells you when it is needed.

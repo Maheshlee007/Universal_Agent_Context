@@ -111,7 +111,7 @@ let focusSess = null;    // #sessions/<id>
 const openCards = new Set();   // expanded session cards survive polling
 const openEvents = new Set();  // expanded raw-events lists
 const dcache = new Map();      // session id -> /api/sessions/:id detail
-const sf = { branch: '', rolled: false, into: '', notice: null };
+const sf = { branch: '', rolled: false, into: '', notice: null, view: 'list' }; // view: list = sessions, timeline = every chapter
 const picked = new Set();      // session ids ticked for merge / rollup
 const kf = { q: '', all: false, open: null }; // open = the one expanded knowledge section
 
@@ -226,6 +226,7 @@ async function loadProjects() {
 // ---------- views ----------
 const VIEWS = {
   async sessions(out, live) {
+    if (sf.view === 'timeline') return timelineView(out, live);
     const banner = h('div', { class: 'card banner' }), notice = h('div'), bar = h('div', { class: 'bar' }), selBar = h('div'), listBox = h('div');
     out.append(banner, notice, bar, selBar, listBox);
     let sig = '', ss = [];
@@ -284,7 +285,7 @@ const VIEWS = {
       const emptyN = ss.filter(s => isEmpty(s) && !s.rolled_into && Date.now() - toDate(s.started_at) > 30 * 60e3).length;
       const shown = ss.filter(s => !sf.branch || s.branch === sf.branch);
       const rollN = shown.filter(s => !s.rolled_into && s.card).length; // server rolls up carded sessions only
-      fill(bar,
+      fill(bar, viewToggle(),
         sel(sf.branch, [['', 'All branches'], ...branches.map(b => [b, 'Branch ' + b])], { onchange: (e) => { sf.branch = e.target.value; load(true).catch(err => toast(err.message)); } }),
         emptyN ? twoStep(`Delete empty sessions (${emptyN})`, `Confirm delete ${emptyN} empty session${emptyN > 1 ? 's' : ''}`, async () => {
           const r = await api(P('/api/sessions/cleanup'), 'POST', { empty: true });
@@ -398,6 +399,7 @@ const VIEWS = {
       MODES.map(([m, desc]) => h('label', { class: 'mode' },
         h('input', { type: 'radio', name: 'mode', value: m, checked: m === mode, onchange: act(async () => { await api(P('/api/settings'), 'PUT', { mode: m }); saved.textContent = 'Saved: ' + m; }) }),
         ' ', h('b', null, m), h('span', { class: 'meta' }, desc))), saved));
+    out.append(shareCard(cur));
 
     const c = x.counts || {};
     const tile = (label, n) => h('div', { class: 'tile' }, h('div', { class: 'n' }, n ?? '–'), h('div', { class: 'meta' }, label));
@@ -523,6 +525,72 @@ function fillBody(s, box) {
   const cached = dcache.get(s.id);
   if (cached) draw(cached); else box.replaceChildren(empty('Loading…'));
   api(`/api/sessions/${enc(s.id)}`).then(d => { dcache.set(s.id, d); if (box.isConnected) draw(d); }).catch(e => { if (!cached) draw(null); toast(e.message); });
+}
+
+// ---------- timeline: every saved chapter of the project, newest first ----------
+const viewToggle = () => h('span', null, [['list', 'Sessions'], ['timeline', 'Timeline']].map(([v, l]) =>
+  h('button', { class: sf.view === v ? 'on' : '', title: v === 'timeline' ? 'Every saved chapter of every session, newest first' : null, onclick: () => { sf.view = v; render(); } }, l)));
+async function timelineView(out, live) {
+  const rows = await api(P('/api/timeline'));
+  if (!live()) return;
+  out.append(h('div', { class: 'bar' }, viewToggle(), h('span', { class: 'meta' }, `${rows.length} chapter${rows.length === 1 ? '' : 's'}${rows.length >= 300 ? ' (latest 300)' : ''}, newest first`)),
+    h('div', { class: 'msglist' }, rows.length ? rows.map(chapterRow) : empty('No saved chapters yet: every save of a session writes one.')));
+}
+function chapterRow(c) {
+  const day = (t) => toDate(t).toLocaleDateString(), tm = (t) => toDate(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const when = !c.from_ts ? fmt(c.at) : day(c.from_ts) === day(c.at) ? `${day(c.at)} ${tm(c.from_ts)}–${tm(c.at)}` : `${fmt(c.from_ts)} – ${fmt(c.at)}`;
+  const body = h('div'), arrow = h('span', null, '▸'), files = arr(c.files);
+  let open = false;
+  const toggle = act(async () => {
+    open = !open; arrow.textContent = open ? '▾' : '▸';
+    if (!open) return body.replaceChildren();
+    body.replaceChildren(empty('Loading…'));
+    const d = await api(`/api/chapter/${enc(c.id)}`), k = d.checkpoint || {};
+    if (open) fill(body, text('Summary', d.chapter?.body), text('Goal', k.goal), text('Working', k.working), text('Broken', k.broken), list('Next steps', k.next_steps),
+      text('Note for next dev', k.note), text('Gaps', k.gaps), list('Files', k.files));
+  });
+  const toSession = (e) => { e.preventDefault(); sf.view = 'list'; focusSess = c.session_id; openCards.add(c.session_id); setHash(); render(); };
+  return h('div', { class: 'card' },
+    h('div', { class: 'sh', onclick: toggle }, h('span', { class: 'n' }, arrow, ' ', when), h('h3', null, c.title || '(untitled chapter)')),
+    h('div', { class: 'row', style: 'margin-top:2px' },
+      h('a', { class: 'mono', href: '#sessions/' + enc(c.session_id), title: 'Open this session', onclick: toSession }, c.session),
+      c.branch ? pill('⎇ ' + c.branch) : null, c.area ? pill(c.area, 'acc', 'Package') : null,
+      c.events_n != null ? pill(`${c.events_n} events`) : null,
+      c.pre ? pill('whole-session card', '', 'Saved before chapters existed (pre 0.6): overlaps the later chapters') : null,
+      files.length ? h('span', { class: 'meta mono' }, files.slice(0, 3).join('  ') + (files.length > 3 ? `  +${files.length - 3}` : '')) : null),
+    body);
+}
+
+// ---------- share with a coworker: this project's knowledge + chapters as one file (never uac.db) ----------
+let shareNote = null; // the last import's result, shown once after the refresh
+function shareCard(cur) {
+  const name = cur.name || cur.root || project, box = h('div', { class: 'row' }, shareNote);
+  shareNote = null;
+  const exp = h('button', { title: 'Download a file with this project\'s knowledge and session chapters (no raw prompts) to send to a coworker', onclick: act(async () => {
+    if (window.top === window) return void (location.href = P('/api/export', { t: TOKEN }));
+    // embedded in the VS Code webview, which blocks downloads: the server writes the file into the project folder
+    const r = await api(P('/api/export', { save: 1 }));
+    fill(box, h('span', { class: 'meta' }, 'Wrote ', h('span', { class: 'mono' }, r.file), ': send it to your coworker (do not commit it).'));
+  }) }, 'Export bundle');
+  const pick = h('input', { type: 'file', accept: '.json,application/json', onchange: act(async () => {
+    const f = pick.files[0];
+    if (!f) return;
+    let b;
+    try { b = JSON.parse(await f.text()); } catch { pick.value = ''; throw new Error(`${f.name} is not JSON`); }
+    if (b?.format !== 'uac-bundle') { pick.value = ''; throw new Error(`${f.name} is not a UAC bundle (made by Export bundle or "uac export --bundle")`); }
+    const n = (k) => arr(b[k]).length;
+    fill(box, h('span', { class: 'meta' }, `${f.name}: from ${b.project?.name || '?'}, exported ${fmt(b.exported_at)}`),
+      twoStep('Import', `Import ${n('memories')} memories, ${n('sessions')} sessions, ${n('summaries')} chapters into ${name}?`, async () => {
+        const r = await api(P('/api/import'), 'POST', b);
+        shareNote = h('span', { class: 'meta' }, `Imported from ${r.from || '?'}: ${r.memories_added} memories added, ${r.memories_updated} updated, ${r.sessions_added} sessions, ${r.chapters_added} chapters (${r.skipped} already here).`,
+          r.warning ? ' Warning: ' + r.warning : '');
+        dcache.clear(); updateBadge(); await render();
+      }, 'pri'),
+      h('button', { onclick: () => { pick.value = ''; box.replaceChildren(); } }, 'Cancel'));
+  }) });
+  return h('div', { class: 'card' }, h('h3', null, 'Share with a coworker'),
+    h('div', { class: 'meta' }, 'One file with this project\'s knowledge and session chapters. They import it in their clone. Never send ~/.uac/uac.db: it holds every project on this machine.'),
+    h('div', { class: 'row' }, exp, h('span', { class: 'meta' }, 'Import a bundle:'), pick), box);
 }
 
 // ---------- knowledge ----------

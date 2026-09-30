@@ -110,12 +110,7 @@ function getById(id, { raw, p } = {}) {
   // every row is scoped to this project (user-scope memories have no project and are shared on purpose)
   const row = t === 'memories' ? S.memory(id) : S.open().prepare(`SELECT * FROM ${t} WHERE id = ?`).get(id);
   if (!row || (row.project_id != null && row.project_id !== p.id)) return { id, error: 'not found in this project' };
-  if (t === 'summaries') { // a chapter: its summary + the checkpoint written with it
-    const ch = S.chapters(row.session_id).find((c) => c.id === id);
-    const cp = ch?.checkpoint_id && S.open().prepare('SELECT goal, working, broken, files, next_steps, note, gaps, ts FROM checkpoints WHERE id = ?').get(ch.checkpoint_id);
-    return { chapter: { id, no: ch?.no, title: row.title, body: row.body, from_ts: row.from_ts, at: row.created_at, events_n: row.events_n, model: row.model, pre: ch?.pre },
-      checkpoint: cp ? { ...cp, files: JSON.parse(cp.files || '[]'), next_steps: JSON.parse(cp.next_steps || '[]') } : null };
-  }
+  if (t === 'summaries') { const { chapter, checkpoint } = S.chapter(id); return { chapter, checkpoint }; }
   return t === 'memories' ? { ...row, relations: S.open().prepare('SELECT * FROM memory_relations WHERE a = ? OR b = ?').all(id, id) } : row;
 }
 

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { all, get, run, tx, uid, now, J, P, hasFts, open } from './db.mjs';
-import { gitInfo, git, gitRaw, defaultBranch, redact, clip, ignored } from './util.mjs';
+import { gitInfo, git, gitRaw, defaultBranch, redact, clip, ignored, VERSION } from './util.mjs';
 
 // overview: the project's "what is what", one active per project (a new one replaces the previous)
 export const TYPES = ['fact', 'decision', 'constraint', 'lesson', 'requirement', 'preference', 'warning', 'idea', 'task', 'architecture', 'overview'];
@@ -785,13 +785,28 @@ export function search(projectId, q, { type, status, limit = 20 } = {}) {
 }
 
 // ---------- chapters across sessions (timeline, chapter search) ----------
-const CHAPTERS = `SELECT x.id, x.session_id AS sid, s.seq, x.title, x.body, x.created_at AS at, COALESCE(x.checkpoint_id,
+const CHAPTERS = `SELECT x.id, x.session_id AS sid, s.seq, s.branch, s.area, x.title, x.body, x.from_ts, x.events_n, x.created_at AS at, COALESCE(x.checkpoint_id,
     (SELECT c.id FROM checkpoints c WHERE c.session_id = x.session_id AND c.trigger = 'save' AND c.ts >= x.created_at ORDER BY c.ts LIMIT 1)) AS cp
   FROM summaries x JOIN sessions s ON s.id = x.session_id WHERE x.project_id = ? AND x.quality = 'llm' AND s.rolled_into IS NULL`;
 // newest first: sessions on this branch and those with no branch, in this package or repo-wide
 export const recentChapters = (projectId, { branch = null, area = null } = {}) =>
   all(`${CHAPTERS} AND (s.branch IS NULL OR s.branch IS ?) AND (? IS NULL OR s.area IS NULL OR s.area = ?) ORDER BY x.created_at DESC LIMIT 500`, projectId, branch, area, area);
 export const chapterFiles = (cp) => P(cp ? get('SELECT files FROM checkpoints WHERE id = ?', cp)?.files : null, []);
+// dashboard timeline: every chapter of the project, newest first
+export function timeline(projectId, limit = 300) {
+  assignSeq(projectId);
+  return all(`${CHAPTERS} ORDER BY x.created_at DESC LIMIT ?`, projectId, limit).map((x) => ({ id: x.id, session: ref({ seq: x.seq, id: x.sid }), session_id: x.sid,
+    branch: x.branch, area: x.area, from_ts: x.from_ts, at: x.at, events_n: x.events_n, title: x.title, files: chapterFiles(x.cp), pre: !x.from_ts }));
+}
+// one chapter: its summary + the checkpoint written with it
+export function chapter(id) {
+  const row = get('SELECT * FROM summaries WHERE id = ?', id);
+  if (!row) return null;
+  const ch = chapters(row.session_id).find((c) => c.id === id);
+  const cp = ch?.checkpoint_id && get('SELECT goal, working, broken, files, next_steps, note, gaps, ts FROM checkpoints WHERE id = ?', ch.checkpoint_id);
+  return { project_id: row.project_id, chapter: { id, no: ch?.no, title: row.title, body: row.body, from_ts: row.from_ts, at: row.created_at, events_n: row.events_n, model: row.model, pre: ch?.pre },
+    checkpoint: cp ? { ...cp, files: P(cp.files, []), next_steps: P(cp.next_steps, []) } : null };
+}
 
 // Content words of a text: 3+ chars minus stopwords, crudely stemmed; a version (v0.6.1) also counts as its prefix (0.6).
 // ponytail: stopwords + suffix stem, no IDF; FTS5 over summaries if matching needs to get smarter
@@ -920,6 +935,80 @@ export function exportProjectMd(p) {
   fs.writeFileSync(tmp, out);
   fs.renameSync(tmp, path.join(dir, 'PROJECT.md'));
   return path.join(dir, 'PROJECT.md');
+}
+
+// ---------- share bundle: one project's knowledge + chapters for a coworker ----------
+// (uac.db is every project on this machine, with absolute paths and raw prompts: never the thing to send)
+const SESSION_META = ['id', 'agent', 'model', 'branch', 'area', 'title', 'start_commit', 'end_commit', 'started_at', 'ended_at', 'last_active_at', 'prompts', 'quality', 'rolled_into'];
+const EVENT_COLS = ['session_id', 'ts', 'kind', 'tool', 'target', 'body', 'agent_id'];
+export const bundleName = (p) => `uac-${String(p.name || 'project').replace(/[^\w.-]+/g, '-')}-${now().slice(0, 10).replace(/-/g, '')}.json`;
+export function exportBundle(p, { events = false } = {}) {
+  const sessions = all(`SELECT ${SESSION_META.map((c) => `s.${c}`).join(', ')} FROM sessions s WHERE s.project_id = ? AND NOT ${PHANTOM} ORDER BY s.started_at`, p.id);
+  return {
+    format: 'uac-bundle', format_version: 1, uac_version: VERSION, exported_at: now(), project: { name: p.name, git_remote: p.git_remote ?? null },
+    memories: all('SELECT * FROM memories WHERE project_id = ?', p.id),
+    memory_versions: all('SELECT v.* FROM memory_versions v JOIN memories m ON m.id = v.memory_id WHERE m.project_id = ?', p.id),
+    memory_relations: all('SELECT DISTINCT r.* FROM memory_relations r JOIN memories m ON m.id IN (r.a, r.b) WHERE m.project_id = ?', p.id),
+    sessions,
+    summaries: all(`SELECT * FROM summaries WHERE project_id = ? AND quality = 'llm'`, p.id),
+    checkpoints: all(`SELECT * FROM checkpoints WHERE project_id = ? AND trigger IN ('save', 'manual')`, p.id),
+    messages: all('SELECT * FROM messages WHERE project_id = ?', p.id),
+    ...(events ? { events: all(`SELECT ${EVENT_COLS.join(', ')} FROM events WHERE kind != 'pending' AND session_id IN (SELECT value FROM json_each(?)) ORDER BY id`, J(sessions.map((s) => s.id))) } : {}),
+  };
+}
+
+// Only this schema's column names ever reach the SQL; a bundle's keys pick values, never columns.
+const columns = (t) => all(`PRAGMA table_info(${t})`).map((c) => c.name);
+function insertRow(t, row, cs = columns(t)) {
+  const use = cs.filter((c) => Object.hasOwn(row, c));
+  return run(`INSERT OR IGNORE INTO ${t}(${use.join(', ')}) VALUES (${use.map(() => '?').join(', ')})`, ...use.map((c) => row[c])).changes;
+}
+// Into THIS project (the coworker runs it in their clone). Rows are keyed by id, so a second import of the same file adds
+// nothing; a memory both sides have keeps the later updated_at. Rows of another project with the same id are left alone.
+// ponytail: ids are 3 random bytes (m-/s-/c-/msg-), so a cross-machine collision is skipped, not remapped; remap if it bites
+export function importBundle(p, b) {
+  if (b?.format !== 'uac-bundle') throw new Error('not a UAC bundle (write one with "uac export --bundle")');
+  if (!(Number(b.format_version) <= 1)) throw new Error(`bundle format ${b.format_version} is newer than this UAC (${VERSION}): update UAC first`);
+  const rows = (k, key = 'id') => (Array.isArray(b[k]) ? b[k] : []).filter((x) => x && typeof x[key] === 'string');
+  const origin = `import:${b.project?.name || '?'}@${String(b.exported_at || '').slice(0, 10)}`;
+  const r = { from: b.project?.name ?? null, memories_added: 0, memories_updated: 0, sessions_added: 0, chapters_added: 0, skipped: 0 };
+  if (b.project?.git_remote && p.git_remote && normRemote(b.project.git_remote) !== normRemote(p.git_remote))
+    r.warning = `the bundle is from ${b.project.git_remote}, this project is ${p.git_remote}`;
+  const add = (t, row) => { const n = insertRow(t, row); if (!n) r.skipped++; return n; };
+  tx(() => {
+    const added = [];
+    for (const s of rows('sessions')) {
+      const row = Object.fromEntries(SESSION_META.map((c) => [c, s[c] ?? null]));
+      if (add('sessions', { ...row, project_id: p.id, root: p.root, status: 'ended', ended_at: row.ended_at || row.last_active_at || row.started_at, capture: 'off', seq: null, origin })) added.push(s.id);
+    }
+    r.sessions_added = added.length;
+    const mine = new Set(all('SELECT id FROM sessions WHERE project_id = ?', p.id).map((x) => x.id));
+    const cs = columns('memories');
+    for (const m of rows('memories')) {
+      const cur = get('SELECT project_id, updated_at FROM memories WHERE id = ?', m.id), row = { ...m, project_id: p.id };
+      if (!cur) { insertRow('memories', row, cs); r.memories_added++; }
+      else if (cur.project_id === p.id && String(m.updated_at || '') > String(cur.updated_at || '')) {
+        const set = cs.filter((c) => c !== 'id' && Object.hasOwn(row, c));
+        run(`UPDATE memories SET ${set.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`, ...set.map((c) => row[c]), m.id);
+        r.memories_updated++;
+      } else r.skipped++;
+    }
+    const own = (id) => !!get('SELECT 1 AS x FROM memories WHERE id = ? AND project_id = ?', id, p.id);
+    for (const v of rows('memory_versions', 'memory_id'))
+      if (own(v.memory_id) && !get('SELECT 1 AS x FROM memory_versions WHERE memory_id = ? AND version = ?', v.memory_id, v.version)) insertRow('memory_versions', v);
+    for (const x of rows('memory_relations', 'a')) if (own(x.a) && own(x.b)) insertRow('memory_relations', x);
+    for (const x of rows('summaries')) if (mine.has(x.session_id)) r.chapters_added += add('summaries', { ...x, project_id: p.id }); else r.skipped++;
+    for (const x of rows('checkpoints')) if (mine.has(x.session_id)) add('checkpoints', { ...x, project_id: p.id }); else r.skipped++;
+    // history, not news: marked read so no session here gets them as new messages
+    for (const x of rows('messages')) if (add('messages', { ...x, project_id: p.id })) run(`INSERT OR IGNORE INTO message_reads VALUES (?, 'import')`, x.id);
+    // raw events only for sessions new here (events have no stable id); marked saved, or every one would count as unsaved work
+    const fresh = new Set(added);
+    for (const e of rows('events', 'session_id')) if (fresh.has(e.session_id)) insertRow('events', Object.fromEntries(EVENT_COLS.map((c) => [c, e[c] ?? null])), EVENT_COLS);
+    run(`UPDATE sessions SET saved_event_id = (SELECT COALESCE(MAX(id), 0) FROM events e WHERE e.session_id = sessions.id) WHERE id IN (SELECT value FROM json_each(?))`, J(added));
+  });
+  assignSeq(p.id); // imported sessions get the next numbers, in start order
+  try { exportProjectMd(p); } catch {}
+  return r;
 }
 
 export { open };

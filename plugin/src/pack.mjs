@@ -79,7 +79,7 @@ const rel = (root, f) => {
 };
 const GROUPS = [['decision', 'Decisions'], ['warning', 'Warnings'], ['lesson', 'Lessons'], ['architecture', 'Architecture'],
   ['fact', 'Facts'], ['task', 'Open tasks'], ['preference', 'Preferences (apply only where stated)']];
-const cardMeta = (s, x) => `${x ? `${S.ref(x)} · ` : ''}${s.branch || 'no-branch'}${s.area ? ` · in ${s.area}` : ''} · ${s.agent}${s.model ? ` (${s.model})` : ''} · ${ago(x?.last_active || s.started_at)}`;
+const cardMeta = (s, x) => `${x ? `${S.ref(x)} · ` : ''}${s.branch || 'no-branch'}${s.area ? ` · in ${s.area}` : ''}${s.origin ? ' · imported' : ''} · ${s.agent}${s.model ? ` (${s.model})` : ''} · ${ago(x?.last_active || s.started_at)}`;
 // (1–2 unsaved events after a save are its closing reply: not worth a mention)
 const state = (x, selfId) => `${x.id === selfId ? 'this session' : x.live ? `active ${ago(x.last_active)}, not ended (another window, or closed without SessionEnd)` : x.status === 'ended' ? 'ended' : 'idle'}, ${x.card ? (x.card.quality === 'auto' ? 'auto card' : 'saved card') : 'no card'}${(x.card?.quality === 'auto' ? x.unsaved >= OTHER_SAVE_MIN : x.unsaved >= 3) || (x.unsaved && !x.card) ? `, ${x.unsaved} unsaved` : ''}${x.raw ? '' : ', no raw log'}`;
 const hasContent = (c) => c && (c.title || c.body || c.working || c.next_steps?.length);
